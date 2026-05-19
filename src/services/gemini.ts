@@ -548,11 +548,7 @@ export const generateGeminiImage = async (
     // gemini-3.1-flash-image-preview: $0.067/ảnh, ref image ✅, chất lượng cao nhất
     // gemini-2.5-flash-image: $0.039/ảnh, ref image ✅, fallback
     // imagen-4.0-fast-generate-001: $0.02/ảnh, nhanh, KHÔNG có ref image
-    const models = [
-      'gemini-3.1-flash-image-preview',
-      'gemini-2.5-flash-image',
-      'imagen-4.0-fast-generate-001',
-    ];
+    const models: string[] = []; // ✅ Bỏ hết Gemini image models, dùng fallback
     
     for (const modelName of models) {
       try {
