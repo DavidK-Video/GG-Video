@@ -1,0 +1,57 @@
+
+html, body, #root {
+  height: 100%;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  background-color: #f1f5f9;
+}
+
+#root {
+  display: flex;
+  flex-direction: column;
+}
+
+.custom-scrollbar::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 10px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+video {
+  object-fit: contain;
+  background: #000;
+  max-height: 100%;
+}
+
+textarea, input {
+  transition: all 0.2s ease;
+}
+
+textarea:focus, input:focus, select:focus {
+  border-color: #4f46e5 !important;
+  box-shadow: 0 0 0 2px rgba(79, 70, 229, 0.1);
+}
+
+.script-font-vn {
+  font-family: "Times New Roman", Times, serif !important;
+}
+
+@media (max-width: 768px) {
+  .mobile-full-height {
+    height: 100%;
+  }
+}

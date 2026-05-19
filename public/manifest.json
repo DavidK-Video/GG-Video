@@ -1,0 +1,31 @@
+
+{
+  "manifest_version": 3,
+  "name": "YOHU-pro Veo 3.1 Studio",
+  "version": "1.0.0",
+  "description": "Nền tảng tạo video AI Cinema chuyên nghiệp với Veo 3.1 Pro Continuity Engine.",
+  "permissions": [
+    "storage",
+    "activeTab",
+    "scripting",
+    "unlimitedStorage"
+  ],
+  "host_permissions": [
+    "https://*.google.com/",
+    "https://*.googleapis.com/",
+    "https://api.qrserver.com/"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": "icon.png"
+  },
+  "icons": {
+    "16": "icon.png",
+    "32": "icon.png",
+    "48": "icon.png",
+    "128": "icon.png"
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' https://esm.sh; object-src 'self';"
+  }
+}

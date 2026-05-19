@@ -1,0 +1,33 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;600;700&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Outfit", sans-serif;
+  --font-serif: "Times New Roman", Times, serif;
+
+  --color-primary: #0f172a; /* slate-900 */
+  --color-primary-hover: #334155; /* slate-700 */
+  --color-accent: #2563eb; /* blue-600 */
+  --color-surface-bg: #f8fafc; /* slate-50 */
+  --color-surface-border: #cbd5e1; /* slate-300 */
+}
+
+@layer utilities {
+  @media screen and (max-width: 768px) and (orientation: portrait) {
+    .hide-on-mobile-portrait {
+       display: none !important;
+    }
+  }
+  
+  /* Focus-based hiding for mobile to save space */
+  .hide-on-input-focus:focus-within ~ .collapsible-mobile-only {
+    display: none !important;
+  }
+}
+
+@layer base {
+  body {
+    @apply bg-slate-50 text-slate-900 font-sans antialiased;
+  }
+}
