@@ -10,5 +10,3 @@ export function isTruthy(value: unknown): boolean {
   }
   return false;
 }
-git commit --allow-empty -m "trigger redeploy"
-git push
