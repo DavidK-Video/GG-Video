@@ -448,7 +448,7 @@ export const generateGeminiText = async (
         if (isUnavailable || isNotFound) continue;
         
         if (isQuota || isAuth) {
-          if (count < finalKeys.length - 1) {
+          if (count < uniqueKeys.length - 1) {
             await sleep(200);
             break; // Try next key
           }
@@ -597,7 +597,7 @@ export const generateGeminiImage = async (
         
         if (isUnavailable || isNotFound || isNoImage) continue;
         if (isQuota || isAuth) {
-          if (count < finalKeys.length - 1) {
+          if (count < uniqueKeys.length - 1) {
             await sleep(200);
             break;
           }
