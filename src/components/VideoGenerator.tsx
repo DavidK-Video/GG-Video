@@ -1925,12 +1925,12 @@ export const VideoGenerator: React.FC<VideoGeneratorProps> = ({
                        <input type="file" ref={refImageInputRef} onChange={handleRefImageChange} hidden accept="image/*" />
                     </div>
                   </div>
-                  <div className="h-40 bg-white border-2 border-slate-100 rounded-2xl p-3 shadow-inner">
-                    <div className="h-full overflow-x-auto flex gap-3 pb-1">
+                  <div className="bg-white border-2 border-slate-100 rounded-2xl p-3 shadow-inner max-h-[400px] overflow-y-auto">
+                    <div className="grid grid-cols-3 gap-3">
                       {batchResults.map((res, idx) => (
-                        <div key={idx} className="flex-shrink-0 w-32 relative group">
+                        <div key={idx} className="relative group cursor-pointer" onClick={() => { if(res.url) window.open(res.url, '_blank'); }}>
                           {res.url ? (
-                            <img src={res.url} className="w-full h-full object-cover rounded-xl border-2 border-slate-100" />
+                            <img src={res.url} className="w-full aspect-square object-contain bg-slate-50 rounded-xl border-2 border-slate-100" />
                           ) : (
                             <div className="w-full h-full bg-slate-100 rounded-xl border-2 border-dashed border-slate-200 flex flex-col items-center justify-center p-2 text-center overflow-hidden">
                               <span className={`text-[9px] ${res.error ? 'text-red-500' : 'text-slate-400'} font-black uppercase leading-tight cursor-help`} title={res.error}>
