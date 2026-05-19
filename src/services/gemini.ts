@@ -709,7 +709,7 @@ const buildPollinationsUrl = () =>
 
   // 1. Pixazo FLUX Schnell (nhanh, rẻ, không cần ref)
   try {
-    const pixRes = await fetch('/api/pixazo', {
+    const pixRes = await fetch('https://gentle-credit-a948.yohu-vn.workers.dev/api/pixazo',
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ prompt, size }),
@@ -728,7 +728,7 @@ const buildPollinationsUrl = () =>
   // 2. SiliconFlow FLUX Kontext Dev — CÓ ảnh tham chiếu (giữ khuôn mặt nhân vật)
   if (refImageBase64) {
     try {
-      const sfRes = await fetch('/api/siliconflow', {
+      const sfRes = await fetch('https://gentle-credit-a948.yohu-vn.workers.dev/api/siliconflow',
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
