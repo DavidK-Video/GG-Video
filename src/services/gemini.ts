@@ -1,8 +1,8 @@
 import { GoogleGenAI, Modality } from "@google/genai";
 import { Resolution, AspectRatio, VideoMode, UserProfile } from "../types";
-
+ 
 import { translate } from "../i18n";
-
+ 
 export interface VeoRequest {
   mode: VideoMode;
   prompt: string;
@@ -18,19 +18,19 @@ export interface VeoRequest {
   apiKeys?: string[];
   useProjectKey?: boolean;
 }
-
+ 
 const getRawBase64 = (base64String: string) => {
   if (!base64String) return "";
   const parts = base64String.split(',');
   return parts.length > 1 ? parts[1] : parts[0];
 };
-
+ 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
-
+ 
 export const processKeys = (keys: string[]): string[] => {
   const allFoundKeys: string[] = [];
   const keyRegex = /AIzaSy[A-Za-z0-9_-]{33}/g;
-
+ 
   for (const k of keys) {
     if (!k || typeof k !== 'string') continue;
     
@@ -50,7 +50,7 @@ export const processKeys = (keys: string[]): string[] => {
   
   return Array.from(new Set(allFoundKeys)).filter(k => k && k.length > 20 && !k.toLowerCase().includes('placeholder'));
 };
-
+ 
 // ── resolveImageKeys: Dùng riêng cho tạo ảnh (FREE IMG = OFF) ──
 // Thứ tự: freeKeys trước → paidKeys sau → không trộn lẫn
 // Chuyển key ngay khi lỗi 429, không chờ retry
@@ -60,23 +60,23 @@ export const resolveImageKeys = (
   adminPaidKeys: string[]
 ): { freeKeys: string[]; paidKeys: string[] } => {
   const userKeys = processKeys(userApiKeys);
-
+ 
   // Env free keys
   const envFree = [
     import.meta.env.VITE_GEMINI_FREE_KEYS,
   ].flatMap(v => v ? v.split(',').map((k: string) => k.trim()).filter(Boolean) : []);
-
+ 
   // Env paid keys
   const envPaid = [
     import.meta.env.VITE_GEMINI_PAID_KEYS,
   ].flatMap(v => v ? v.split(',').map((k: string) => k.trim()).filter(Boolean) : []);
-
+ 
   const allFree = Array.from(new Set([...processKeys(envFree), ...adminFreeKeys]));
   const allPaid = Array.from(new Set([...userKeys, ...processKeys(envPaid), ...adminPaidKeys]));
-
+ 
   return { freeKeys: allFree, paidKeys: allPaid };
 };
-
+ 
 const resolveKeys = (apiKeys: string[], useProjectKey: boolean): string[] => {
   const envValues = [
     import.meta.env.VITE_GEMINI_API_KEY,
@@ -84,7 +84,7 @@ const resolveKeys = (apiKeys: string[], useProjectKey: boolean): string[] => {
     import.meta.env.VITE_GEMINI_FREE_KEYS,
     import.meta.env.VITE_GEMINI_PAID_KEYS,
   ];
-
+ 
   if (typeof process !== 'undefined') {
     envValues.push(
       process.env.GEMINI_API_KEY,
@@ -98,14 +98,14 @@ const resolveKeys = (apiKeys: string[], useProjectKey: boolean): string[] => {
       process.env.GOOGLE_KEY_PRO9
     );
   }
-
+ 
   // Cookie / sessionStorage custom key (người dùng nhập vào UI)
   const customKey = typeof sessionStorage !== 'undefined'
     ? (sessionStorage.getItem('veopro_custom_key') || '')
     : '';
-
+ 
   const userKeys = processKeys(apiKeys);
-
+ 
   // Khi useProjectKey=false: ưu tiên customKey từ sessionStorage
   if (!useProjectKey && customKey && !customKey.startsWith('GOOGLE_KEY_')) {
     const parsed = processKeys([customKey]);
@@ -113,9 +113,9 @@ const resolveKeys = (apiKeys: string[], useProjectKey: boolean): string[] => {
       if (!userKeys.includes(k)) userKeys.unshift(k);
     }
   }
-
+ 
   const sysKeys: string[] = [];
-
+ 
   if (useProjectKey || userKeys.length === 0) {
     for (const val of envValues) {
       if (val && typeof val === 'string') {
@@ -124,13 +124,13 @@ const resolveKeys = (apiKeys: string[], useProjectKey: boolean): string[] => {
       }
     }
   }
-
+ 
   const finalUserKeys = Array.from(new Set(userKeys));
   const finalSysKeys = Array.from(new Set(processKeys(sysKeys))).filter(k => !finalUserKeys.includes(k));
-
+ 
   return [...finalUserKeys, ...finalSysKeys];
 };
-
+ 
 const parseErrorMessage = (err: any): string => {
   let msg = err.message || "";
   try {
@@ -142,7 +142,7 @@ const parseErrorMessage = (err: any): string => {
   } catch { /* ignore */ }
   return msg;
 };
-
+ 
 const fetchVideoAsBlobUrl = async (uri: string, apiKey: string): Promise<string> => {
   try {
     const response = await fetch(uri, {
@@ -161,7 +161,7 @@ const fetchVideoAsBlobUrl = async (uri: string, apiKey: string): Promise<string>
     return `${uri}${separator}key=${apiKey}`; 
   }
 };
-
+ 
 export const generateVeoVideo = async ({
   mode,
   prompt,
@@ -185,7 +185,7 @@ export const generateVeoVideo = async ({
   let lastError: any = null;
   const userKeyCount = Array.from(new Set(processKeys(apiKeys))).length;
   const startIdx = userKeyCount > 0 ? 0 : Math.floor(Math.random() * uniqueKeys.length);
-
+ 
   for (let count = 0; count < uniqueKeys.length; count++) {
     const i = (startIdx + count) % uniqueKeys.length;
     const apiKey = uniqueKeys[i];
@@ -199,34 +199,34 @@ export const generateVeoVideo = async ({
       : ['veo-3.1-lite-generate-preview', 'veo-3.1-generate-preview'];
     
     onProgress?.(`${translate('PROGRESS_INIT', lang)} (Key ${i + 1}/${uniqueKeys.length})`);
-
+ 
     let apiAspectRatio: "16:9" | "9:16" | "1:1" = "16:9";
     if (aspectRatio === AspectRatio.PORTRAIT || aspectRatio === AspectRatio.SUPER_TALL) {
       apiAspectRatio = "9:16";
     } else if (aspectRatio === AspectRatio.SQUARE) {
       apiAspectRatio = "1:1";
     }
-
+ 
     let modelIdx = 0;
     let operation = null;
     let success = false;
-
+ 
     while (modelIdx < targetModels.length && !success) {
       const modelName = targetModels[modelIdx];
       try {
         const maxRetries = uniqueKeys.length > 1 ? 1 : 2;
         let retryCount = 0;
-
+ 
         const executeWithRetry = async (fn: () => Promise<any>): Promise<any> => {
           try {
             return await fn();
           } catch (error: any) {
             const errorMsg = parseErrorMessage(error);
-
+ 
             const isQuota = errorMsg.includes("429") || errorMsg.includes("RESOURCE_EXHAUSTED") || errorMsg.includes("quota") || errorMsg.includes("credits are depleted");
             const isUnavailable = errorMsg.includes("503") || errorMsg.includes("UNAVAILABLE") || errorMsg.includes("high demand");
             const isNotFound = errorMsg.includes("404") || errorMsg.includes("NOT_FOUND");
-
+ 
             if (isNotFound) {
                // Skip model and try next
                throw error;
@@ -244,7 +244,7 @@ export const generateVeoVideo = async ({
             throw error;
           }
         };
-
+ 
         if (previousVideo) {
           onProgress?.(translate('PROGRESS_STITCH', lang));
           operation = await executeWithRetry(() => ai.models.generateVideos({
@@ -340,22 +340,22 @@ export const generateVeoVideo = async ({
         throw err;
       }
     }
-
+ 
     if (!success || !operation) {
        throw new Error("No compatible video model found or all attempts failed.");
     }
-
+ 
     try {
       while (!operation.done) {
         await sleep(10000);
         operation = await ai.operations.getVideosOperation({ name: operation.name });
         onProgress?.(translate('PROGRESS_RENDERING', lang));
       }
-
+ 
       if (operation.error) {
         throw new Error(operation.error.message || "Video generation failed");
       }
-
+ 
       const videoRef = operation.response?.generatedVideos?.[0]?.video;
       if (!videoRef) {
         throw new Error("No video was generated in the response.");
@@ -366,7 +366,7 @@ export const generateVeoVideo = async ({
     } catch (error: any) {
       lastError = error;
       const errorMsg = parseErrorMessage(error);
-
+ 
       const isQuota = errorMsg.includes("429") || errorMsg.includes("RESOURCE_EXHAUSTED") || errorMsg.includes("quota") || errorMsg.includes("credits are depleted");
       const isAuth = errorMsg.includes("API key not valid") || 
                      errorMsg.includes("API key expired") ||
@@ -382,7 +382,7 @@ export const generateVeoVideo = async ({
         } else {
           console.warn(`[API] Key ${i + 1} exhausted (${isQuota ? 'Quota' : 'Auth'}), trying next...`);
         }
-
+ 
         const failType = isQuota ? translate('QUOTA_EXHAUSTED', lang) : translate('AUTH_ERROR', lang);
         onProgress?.(`${failType} (Key ${i + 1}/${uniqueKeys.length}). ${uniqueKeys.length > 1 ? translate('TRYING_NEXT_KEY', lang) : ''}`);
         
@@ -403,14 +403,14 @@ export const generateVeoVideo = async ({
   let userMessage = (isQuota || finalErrorMessage.includes("API key not valid")) 
     ? translate('ALL_KEYS_FAILED', lang)
     : finalErrorMessage;
-
+ 
   if (isQuota) {
     userMessage += `\n\n${translate('QUOTA_HINT', lang)}`;
   }
     
   throw new Error(userMessage, { cause: lastError });
 };
-
+ 
 export const generateGeminiText = async (
   prompt: string, 
   systemInstruction: string, 
@@ -425,11 +425,11 @@ export const generateGeminiText = async (
     (error as any).isKeyError = true;
     throw error;
   }
-
+ 
   let lastError: any = null;
   const userKeyCount = Array.from(new Set(processKeys(apiKeys))).length;
   const startIdx = userKeyCount > 0 ? 0 : Math.floor(Math.random() * uniqueKeys.length);
-
+ 
   for (let count = 0; count < uniqueKeys.length; count++) {
     const i = (startIdx + count) % uniqueKeys.length;
     const apiKey = uniqueKeys[i];
@@ -463,7 +463,7 @@ export const generateGeminiText = async (
             return textResult;
           } catch (error: any) {
             const errorMsg = parseErrorMessage(error);
-
+ 
             const isQuota = errorMsg.includes("429") || errorMsg.includes("RESOURCE_EXHAUSTED") || errorMsg.includes("quota") || errorMsg.includes("credits are depleted");
             const isUnavailable = errorMsg.includes("503") || errorMsg.includes("UNAVAILABLE") || errorMsg.includes("high demand");
             
@@ -475,12 +475,12 @@ export const generateGeminiText = async (
             throw error;
           }
         };
-
+ 
         return await executeWithRetry();
       } catch (error: any) {
         lastError = error;
         const errorMsg = parseErrorMessage(error);
-
+ 
         const isQuota = errorMsg.includes("429") || errorMsg.includes("RESOURCE_EXHAUSTED") || errorMsg.includes("quota") || errorMsg.includes("credits are depleted");
         const isAuth = errorMsg.includes("API key not valid") || errorMsg.includes("401") || errorMsg.includes("403") || errorMsg.includes("PERMISSION_DENIED");
         const isUnavailable = errorMsg.includes("503") || errorMsg.includes("UNAVAILABLE") || errorMsg.includes("high demand");
@@ -504,7 +504,7 @@ export const generateGeminiText = async (
   }
   throw lastError;
 };
-
+ 
 export const generateGeminiImage = async (
   prompt: string, 
   systemInstruction: string, 
@@ -518,13 +518,13 @@ export const generateGeminiImage = async (
 ): Promise<string> => {
   // ── Tách rõ free keys và paid keys ──────────────────────────
   const { freeKeys, paidKeys } = resolveImageKeys(apiKeys, adminFreeKeys, adminPaidKeys);
-
+ 
   // Thứ tự: free trước → paid sau → không trộn lẫn
   // Nếu không có free/paid từ sheet → fallback dùng resolveKeys cũ
   const orderedKeys = freeKeys.length > 0 || paidKeys.length > 0
     ? [...freeKeys, ...paidKeys]
     : resolveKeys(apiKeys, useProjectKey);
-
+ 
   const uniqueKeys = Array.from(new Set(orderedKeys)).filter(Boolean);
   const freeKeySet = new Set(freeKeys);
   
@@ -533,11 +533,11 @@ export const generateGeminiImage = async (
     (error as any).isKeyError = true;
     throw error;
   }
-
+ 
   let lastError: any = null;
   const userKeyCount = Array.from(new Set(processKeys(apiKeys))).length;
   const startIdx = userKeyCount > 0 ? 0 : Math.floor(Math.random() * uniqueKeys.length);
-
+ 
   for (let count = 0; count < uniqueKeys.length; count++) {
     const i = (startIdx + count) % uniqueKeys.length;
     const apiKey = uniqueKeys[i];
@@ -548,13 +548,17 @@ export const generateGeminiImage = async (
     // gemini-3.1-flash-image-preview: $0.067/ảnh, ref image ✅, chất lượng cao nhất
     // gemini-2.5-flash-image: $0.039/ảnh, ref image ✅, fallback
     // imagen-4.0-fast-generate-001: $0.02/ảnh, nhanh, KHÔNG có ref image
-    const models: string[] = []; // ✅ Bỏ hết Gemini image models, dùng fallback
+    const models = [
+      'gemini-3.1-flash-image-preview',
+      'gemini-2.5-flash-image',
+      'imagen-4.0-fast-generate-001',
+    ];
     
     for (const modelName of models) {
       try {
         let retryCount = 0;
         const maxRetries = 1;
-
+ 
         const executeWithRetry = async (): Promise<string> => {
           try {
             const finalPrompt = `${prompt}\n\nIMPORTANT: Do not include any Vietnamese text in the image. If there is text on signs, labels, or backgrounds, it MUST be in English.`;
@@ -570,7 +574,7 @@ export const generateGeminiImage = async (
               });
             }
             parts.push({ text: finalPrompt });
-
+ 
             // gemini-3.1-flash-image-preview / gemini-2.5-flash-image: dùng responseModalities TEXT+IMAGE
             // imagen-4.0-fast-generate-001: dùng imageConfig với aspectRatio
             const isGeminiNative = modelName.startsWith('gemini');
@@ -612,13 +616,13 @@ export const generateGeminiImage = async (
             if (response.generatedImage?.imageBytes) {
                 return `data:image/png;base64,${response.generatedImage.imageBytes}`;
             }
-
+ 
             const noImgErr = new Error("No image generated.");
             (noImgErr as any).isNoImage = true;
             throw noImgErr;
           } catch (error: any) {
             const errorMsg = parseErrorMessage(error);
-
+ 
             const isQuota = errorMsg.includes("429") || errorMsg.includes("RESOURCE_EXHAUSTED") || errorMsg.includes("quota") || errorMsg.includes("credits are depleted");
             const isUnavailable = errorMsg.includes("503") || errorMsg.includes("UNAVAILABLE") || errorMsg.includes("high demand");
             
@@ -631,12 +635,12 @@ export const generateGeminiImage = async (
             throw error;
           }
         };
-
+ 
         return await executeWithRetry();
       } catch (error: any) {
         lastError = error;
         const errorMsg = parseErrorMessage(error);
-
+ 
         const isQuota = errorMsg.includes("429") || errorMsg.includes("RESOURCE_EXHAUSTED") || errorMsg.includes("quota") || errorMsg.includes("credits are depleted");
         const isAuth = errorMsg.includes("API key not valid") || errorMsg.includes("401") || errorMsg.includes("403") || errorMsg.includes("PERMISSION_DENIED");
         const isUnavailable = errorMsg.includes("503") || errorMsg.includes("UNAVAILABLE") || errorMsg.includes("high demand");
@@ -664,7 +668,7 @@ export const generateGeminiImage = async (
   const freeRes = await generateImageFree(prompt, refImage, undefined, undefined, [], aspectRatio as '16:9' | '9:16', false);
   return freeRes.url;
 };
-
+ 
 // ================================================================
 // FREE IMAGE GENERATION — Tháng 5/2026
 // Ưu tiên 1: Pixazo FLUX Schnell (free tier → $0.0012/ảnh, KHÔNG ref image)
@@ -683,7 +687,7 @@ export const generateImageFree = async (
   pollinationsOnly: boolean = false  // true = FREE IMG bật → Pollinations ngay, false = chuỗi đầy đủ
 ): Promise<{ url: string; directUrl?: boolean }> => {
   const seed = Math.floor(Math.random() * 9999999);
-
+ 
   // Tính kích thước ảnh theo aspectRatio
   const sizeMap: Record<string, string> = {
     '16:9': '1280x720',
@@ -693,23 +697,20 @@ export const generateImageFree = async (
   const size = sizeMap[aspectRatio] || '1280x720';
   const [w, h] = size.split('x');
   const encodedPrompt = encodeURIComponent(prompt);
- // MỚI ✅
-const safePrompt = prompt + ', sharp facial features, anatomically correct face, natural skin texture, photorealistic, no distortion, no morphing';
-const encodedSafePrompt = encodeURIComponent(safePrompt);
-const buildPollinationsUrl = () =>
-  `https://image.pollinations.ai/prompt/${encodedSafePrompt}?model=flux-realism&width=${w}&height=${h}&nologo=true&seed=${seed}&enhance=true&quality=high&negative=deformed+face,mutated,disfigured,bad+anatomy`;
-
+  const buildPollinationsUrl = () =>
+    `https://image.pollinations.ai/prompt/${encodedPrompt}?model=flux-realism&width=${w}&height=${h}&nologo=true&seed=${seed}&enhance=true&quality=high`;
+ 
   // ── FREE IMG BẬT: Pollinations ngay lập tức (nhanh, trả URL thẳng, không chờ API) ──
   if (pollinationsOnly) {
     return { url: buildPollinationsUrl(), directUrl: true };
   }
-
+ 
   // ── FREE IMG TẮT: chuỗi chất lượng cao ──
   // Thứ tự: Pixazo → SiliconFlow (có ref) → SiliconFlow (không ref) → Pollinations
-
+ 
   // 1. Pixazo FLUX Schnell (nhanh, rẻ, không cần ref)
   try {
-    const pixRes = await fetch('https://gentle-credit-a948.yohu-vn.workers.dev/api/pixazo',
+    const pixRes = await fetch('https://gentle-credit-a948.yohu-vn.workers.dev/api/pixazo', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ prompt, size }),
@@ -724,11 +725,11 @@ const buildPollinationsUrl = () =>
   } catch (err) {
     console.warn('[FreeImg] Pixazo proxy thất bại:', err);
   }
-
+ 
   // 2. SiliconFlow FLUX Kontext Dev — CÓ ảnh tham chiếu (giữ khuôn mặt nhân vật)
   if (refImageBase64) {
     try {
-      const sfRes = await fetch('https://gentle-credit-a948.yohu-vn.workers.dev/api/siliconflow',
+      const sfRes = await fetch('https://gentle-credit-a948.yohu-vn.workers.dev/api/siliconflow', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -750,10 +751,10 @@ const buildPollinationsUrl = () =>
       console.warn('[FreeImg] SiliconFlow (ref) proxy thất bại:', err);
     }
   }
-
+ 
   // 3. SiliconFlow FLUX Kontext Dev — KHÔNG có ảnh tham chiếu
   try {
-    const sfRes2 = await fetch('https://gentle-credit-a948.yohu-vn.workers.dev/api/siliconflow',
+    const sfRes2 = await fetch('https://gentle-credit-a948.yohu-vn.workers.dev/api/siliconflow', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ prompt, size }),
@@ -768,11 +769,11 @@ const buildPollinationsUrl = () =>
   } catch (err) {
     console.warn('[FreeImg] SiliconFlow (no ref) proxy thất bại, chuyển Pollinations:', err);
   }
-
+ 
   // 4. Pollinations — fallback cuối cùng
   return { url: buildPollinationsUrl(), directUrl: true };
 };
-
+ 
 export const generateGeminiVoice = async (
   text: string,
   voiceLang: string,
@@ -790,7 +791,7 @@ export const generateGeminiVoice = async (
     (error as any).isKeyError = true;
     throw error;
   }
-
+ 
   const langName = voiceLang === 'vi-VN' ? 'Vietnamese' : 
                    voiceLang === 'en-US' ? 'English' :
                    voiceLang === 'fr-FR' ? 'French' :
@@ -800,10 +801,10 @@ export const generateGeminiVoice = async (
                    voiceLang === 'id-ID' ? 'Indonesian' :
                    voiceLang === 'hi-IN' ? 'Hindi' :
                    voiceLang === 'th-TH' ? 'Thai' : 'English';
-
+ 
   const styleText = translate(voiceStyle as any, outputLanguage);
   const qualityText = voiceQuality ? translate(voiceQuality as any, outputLanguage) : '';
-
+ 
   const getPrompt = (segmentText: string, gender: string) => {
     const deepMaleExtra = gender === 'MALE' ? ' (giọng nam trầm, mạnh mẽ, uy quyền)' : '';
     
@@ -811,7 +812,7 @@ export const generateGeminiVoice = async (
 Style: ${styleText}, Quality: ${qualityText}.
 TEXT: ${segmentText}`;
   };
-
+ 
   const rawSegments = text.split(/(\[Giọng Nam\]|\[Giọng Nữ\])/g);
   const segments: { text: string; gender: 'MALE' | 'FEMALE' }[] = [];
   
@@ -827,9 +828,9 @@ TEXT: ${segmentText}`;
       break;
     }
   }
-
+ 
   let currentActiveGender: 'MALE' | 'FEMALE' = firstTagInBox || voiceGender;
-
+ 
   for (let i = 0; i < rawSegments.length; i++) {
     const part = rawSegments[i];
     if (part === '[Giọng Nam]') {
@@ -845,14 +846,14 @@ TEXT: ${segmentText}`;
       segments.push({ text: trimmed, gender: currentActiveGender });
     }
   }
-
+ 
   if (segments.length === 0) return "";
-
+ 
   const generateChunk = async (chunk: { text: string; gender: 'MALE' | 'FEMALE' }, apiKey: string): Promise<Uint8Array> => {
     const ai = new GoogleGenAI({ apiKey });
     let retryCount = 0;
     const maxRetries = 5;
-
+ 
         const execute = async (): Promise<Uint8Array> => {
       try {
         const promptText = getPrompt(chunk.text, chunk.gender);
@@ -877,7 +878,7 @@ TEXT: ${segmentText}`;
             ]
           },
         });
-
+ 
         const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
         if (base64Audio) {
           const binaryString = atob(base64Audio);
@@ -890,7 +891,7 @@ TEXT: ${segmentText}`;
         throw new Error("No audio data returned");
       } catch (error: any) {
         const errorMsg = parseErrorMessage(error);
-
+ 
         const isQuota = errorMsg.includes("429") || errorMsg.includes("RESOURCE_EXHAUSTED") || errorMsg.includes("quota") || errorMsg.includes("credits are depleted");
         const isUnavailable = errorMsg.includes("503") || errorMsg.includes("UNAVAILABLE") || errorMsg.includes("high demand");
         
@@ -913,10 +914,10 @@ TEXT: ${segmentText}`;
     };
     return await execute();
   };
-
+ 
   let lastError: any = null;
   const startIdx = Math.floor(Math.random() * finalKeys.length);
-
+ 
   for (let count = 0; count < finalKeys.length; count++) {
     const i = (startIdx + count) % finalKeys.length;
     const apiKey = finalKeys[i];
@@ -942,7 +943,7 @@ TEXT: ${segmentText}`;
     } catch (error: any) {
       lastError = error;
       const errorMsg = parseErrorMessage(error);
-
+ 
       const isQuota = errorMsg.includes("429") || errorMsg.includes("RESOURCE_EXHAUSTED") || errorMsg.includes("quota") || errorMsg.includes("credits are depleted");
       const isAuth = errorMsg.includes("API key not valid") || errorMsg.includes("401") || errorMsg.includes("403") || errorMsg.includes("PERMISSION_DENIED");
       
@@ -961,3 +962,4 @@ TEXT: ${segmentText}`;
   }
   throw lastError;
 };
+ 
