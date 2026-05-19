@@ -753,7 +753,7 @@ const buildPollinationsUrl = () =>
 
   // 3. SiliconFlow FLUX Kontext Dev — KHÔNG có ảnh tham chiếu
   try {
-    const sfRes2 = await fetch('/api/siliconflow', {
+    const sfRes2 = await fetch('https://gentle-credit-a948.yohu-vn.workers.dev/api/siliconflow',
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ prompt, size }),
