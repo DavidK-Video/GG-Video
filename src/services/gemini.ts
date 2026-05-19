@@ -697,8 +697,11 @@ export const generateImageFree = async (
   const size = sizeMap[aspectRatio] || '1280x720';
   const [w, h] = size.split('x');
   const encodedPrompt = encodeURIComponent(prompt);
-  const buildPollinationsUrl = () =>
-    `https://image.pollinations.ai/prompt/${encodedPrompt}?model=flux-realism&width=${w}&height=${h}&nologo=true&seed=${seed}&enhance=true&quality=high`;
+ // MỚI ✅
+const safePrompt = prompt + ', sharp facial features, anatomically correct face, natural skin texture, photorealistic, no distortion, no morphing';
+const encodedSafePrompt = encodeURIComponent(safePrompt);
+const buildPollinationsUrl = () =>
+  `https://image.pollinations.ai/prompt/${encodedSafePrompt}?model=flux-realism&width=${w}&height=${h}&nologo=true&seed=${seed}&enhance=true&quality=high&negative=deformed+face,mutated,disfigured,bad+anatomy`;
 
   // ── FREE IMG BẬT: Pollinations ngay lập tức (nhanh, trả URL thẳng, không chờ API) ──
   if (pollinationsOnly) {
