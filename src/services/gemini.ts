@@ -710,7 +710,7 @@ export const generateImageFree = async (
  
   // 1. Pixazo FLUX Schnell (nhanh, rẻ, không cần ref)
   try {
-    const pixRes = await fetch('https://gentle-credit-a948.yohu-vn.workers.dev/api/pixazo', {
+    const pixRes = await fetch('/api/pixazo', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ prompt, size }),
@@ -754,7 +754,7 @@ export const generateImageFree = async (
  
   // 3. SiliconFlow FLUX Kontext Dev — KHÔNG có ảnh tham chiếu
   try {
-    const sfRes2 = await fetch('https://gentle-credit-a948.yohu-vn.workers.dev/api/siliconflow', {
+    const sfRes2 = await fetch('/api/siliconflow', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ prompt, size }),
