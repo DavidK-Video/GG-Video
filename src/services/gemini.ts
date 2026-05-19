@@ -386,7 +386,7 @@ export const generateGeminiText = async (
     const apiKey = uniqueKeys[i];
     const ai = new GoogleGenAI({ apiKey });
     
-    const models = ['gemini-3-flash-preview', 'gemini-3.1-pro-preview', 'gemini-flash-latest'];
+    const models = ['gemini-3-flash-preview', 'gemini-3.1-flash-lite-preview', 'gemini-3-flash'];
     
     for (const modelName of models) {
       try {
@@ -493,8 +493,8 @@ export const generateGeminiImage = async (
     // Recommended models for image generation from skill
     const models = [
       'gemini-3.1-flash-image-preview',
-      'gemini-3-pro-image-preview',
-      'gemini-2.5-flash-image'
+      'gemini-3-flash-preview',
+      'gemini-3.1-flash-lite-preview'
     ];
     
     for (const modelName of models) {
