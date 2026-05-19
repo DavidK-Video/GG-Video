@@ -10,7 +10,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  const apiKey = process.env.VITE_PIXAZO_API_KEY;
+  const apiKey = process.env.PIXAZO_API_KEY || process.env.VITE_PIXAZO_API_KEY;
   if (!apiKey) {
     return res.status(500).json({ error: 'Pixazo API key not configured' });
   }
