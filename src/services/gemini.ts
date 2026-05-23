@@ -193,11 +193,11 @@ export const generateVeoVideo = async ({
     
     const isConsistency = (mode === VideoMode.CONSISTENCY || previousVideo);
     
-    // Video models 5/2026: lite (rẻ nhất) → fast (trung) → full (chất lượng cao nhất)
+    // Video models 5/2026: lite (rẻ nhất) → fast → full (đắt nhất)
     // ⚠️ TẤT CẢ Veo đều TRẢ PHÍ - chỉ gọi khi có paid key
     const targetModels = isConsistency 
-      ? ['veo-3.1-generate-preview', 'veo-3.1-fast-generate-preview', 'veo-3.1-lite-generate-preview'] 
-      : ['veo-3.1-lite-generate-preview', 'veo-3.1-fast-generate-preview', 'veo-3.1-generate-preview'];
+      ? ['veo-3.1-generate', 'veo-3-fast', 'veo-3.1-lite-generate-preview'] 
+      : ['veo-3.1-lite-generate-preview', 'veo-3-fast', 'veo-3.1-generate'];
     
     onProgress?.(`${translate('PROGRESS_INIT', lang)} (Key ${i + 1}/${uniqueKeys.length})`);
  
@@ -550,14 +550,12 @@ export const generateGeminiImage = async (
     const apiKey = uniqueKeys[i];
     const ai = new GoogleGenAI({ apiKey });
     
-    // ✅ Image models 5/2026 — FREE trước, PAID sau
-    // gemini-3.1-flash-image-preview: ✅ FREE (500/ngày) - Nano Banana 2, mới nhất
-    // gemini-2.5-flash-image:         ✅ FREE (500/ngày) - ổn định
-    // imagen-4.0-fast-generate-001:   ❌ PAID - nhanh, rẻ nhất trong paid
+    // ✅ Image models 5/2026 — CHỈ FREE, không gọi paid
+    // gemini-3.1-flash-image-preview: ✅ FREE - Nano Banana 2, mới nhất
+    // gemini-2.5-flash-image:         ✅ FREE - ổn định
     const models = [
       'gemini-3.1-flash-image-preview',
       'gemini-2.5-flash-image',
-      'imagen-4.0-fast-generate-001',
     ];
     
     for (const modelName of models) {
