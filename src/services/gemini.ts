@@ -193,10 +193,11 @@ export const generateVeoVideo = async ({
     
     const isConsistency = (mode === VideoMode.CONSISTENCY || previousVideo);
     
-    // Video models from skill: veo-3.1-generate-preview (4K/Pro), veo-3.1-lite-generate-preview (Standard)
+    // Video models 5/2026: lite (rẻ nhất) → fast (trung) → full (chất lượng cao nhất)
+    // ⚠️ TẤT CẢ Veo đều TRẢ PHÍ - chỉ gọi khi có paid key
     const targetModels = isConsistency 
-      ? ['veo-3.1-generate-preview', 'veo-3.1-lite-generate-preview'] 
-      : ['veo-3.1-lite-generate-preview', 'veo-3.1-generate-preview'];
+      ? ['veo-3.1-generate-preview', 'veo-3.1-fast-generate-preview', 'veo-3.1-lite-generate-preview'] 
+      : ['veo-3.1-lite-generate-preview', 'veo-3.1-fast-generate-preview', 'veo-3.1-generate-preview'];
     
     onProgress?.(`${translate('PROGRESS_INIT', lang)} (Key ${i + 1}/${uniqueKeys.length})`);
  
@@ -435,7 +436,13 @@ export const generateGeminiText = async (
     const apiKey = uniqueKeys[i];
     const ai = new GoogleGenAI({ apiKey });
     
-    const models = ['gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-1.5-flash']; // ✅ Models text đúng tháng 5/2026
+    const models = [
+      'gemini-3.5-flash',        // ✅ FREE - Mới nhất, nhanh nhất
+      'gemini-3.1-flash-lite',   // ✅ FREE - Nhanh, tiết kiệm
+      'gemini-2.5-flash',        // ✅ FREE - Ổn định
+      'gemini-2.5-pro',          // ❌ PAID (từ 1/4/2026) - gọi cuối
+      'gemini-3.1-pro-preview',  // ❌ PAID - gọi cuối cùng
+    ]; // ⚠️ gemini-1.5-flash đã bị tắt hoàn toàn (trả 404) - đã xoá
     
     for (const modelName of models) {
       try {
@@ -543,11 +550,10 @@ export const generateGeminiImage = async (
     const apiKey = uniqueKeys[i];
     const ai = new GoogleGenAI({ apiKey });
     
-    // Recommended models for image generation from skill
-    // ✅ Thứ tự: paid tốt nhất → fallback rẻ hơn
-    // gemini-3.1-flash-image-preview: $0.067/ảnh, ref image ✅, chất lượng cao nhất
-    // gemini-2.5-flash-image: $0.039/ảnh, ref image ✅, fallback
-    // imagen-4.0-fast-generate-001: $0.02/ảnh, nhanh, KHÔNG có ref image
+    // ✅ Image models 5/2026 — FREE trước, PAID sau
+    // gemini-3.1-flash-image-preview: ✅ FREE (500/ngày) - Nano Banana 2, mới nhất
+    // gemini-2.5-flash-image:         ✅ FREE (500/ngày) - ổn định
+    // imagen-4.0-fast-generate-001:   ❌ PAID - nhanh, rẻ nhất trong paid
     const models = [
       'gemini-3.1-flash-image-preview',
       'gemini-2.5-flash-image',
@@ -662,11 +668,12 @@ export const generateGeminiImage = async (
       }
     }
   }
-  // Hết tất cả Gemini key → fallback chuỗi: Pixazo → SiliconFlow → Pollinations
-  // Không báo lỗi thẳng → user vẫn nhận được ảnh
-  console.warn('[GeminiImage] Tất cả key hết quota, fallback generateImageFree (full chain)...');
-  const freeRes = await generateImageFree(prompt, refImage, undefined, undefined, [], aspectRatio as '16:9' | '9:16', false);
-  return freeRes.url;
+  // ── FREE IMG TẠM DỪNG ── (chất lượng kém, bật lại khi cần bỏ comment bên dưới)
+  // console.warn('[GeminiImage] Tất cả key hết quota, fallback generateImageFree (full chain)...');
+  // const freeRes = await generateImageFree(prompt, refImage, undefined, undefined, [], aspectRatio as '16:9' | '9:16', false);
+  // return freeRes.url;
+  const imgErr = lastError || new Error('Tất cả API key hết quota. Vui lòng thử lại sau hoặc thêm key mới.');
+  throw imgErr;
 };
  
 // ================================================================
@@ -861,7 +868,7 @@ TEXT: ${segmentText}`;
         const voiceName = chunk.gender === 'MALE' ? 'Fenrir' : 'Kore'; // Fenrir is deeper and stronger
         
         const response = await ai.models.generateContent({
-          model: "gemini-2.5-flash-preview-tts", // ✅ TTS model đúng tháng 5/2026
+          model: "gemini-3.1-flash-tts-preview", // ✅ TTS mới nhất 5/2026 | fallback: gemini-2.5-flash-preview-tts | paid: gemini-2.5-pro-preview-tts
           contents: [{ role: 'user', parts: [{ text: promptText }] }],
           config: {
             responseModalities: [Modality.AUDIO],
