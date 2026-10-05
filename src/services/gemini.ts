@@ -779,6 +779,89 @@ export const generateImageFree = async (
   return { url: buildPollinationsUrl(), directUrl: true };
 };
  
+// ================================================================
+// GEMINI TTS — Tháng 10/2026
+// Chuỗi model (đều có FREE TIER, trừ 2.5-pro chỉ trả phí):
+//   gemini-3.8-flash-lite-tts   ✅ FREE | rẻ nhất, thay thế 3.1 (paid $6/1M audio, KM đến 31/12/2026)
+//   gemini-3.8-flash-tts        ✅ FREE | chất lượng cao nhất, mạnh phương ngữ vùng miền (paid $9/1M audio)
+//   gemini-3.1-flash-tts-preview✅ FREE | fallback đời cũ ($20/1M audio)
+//   gemini-2.5-flash-preview-tts       | fallback đời cũ
+//   gemini-2.5-pro-preview-tts  ❌ PAID | không có free tier — chỉ gọi cuối cùng với key trả phí
+// Gemini 3.8 dùng Interactions API (cần @google/genai >= 2.24.0):
+//   - `text` là bản ghi NGUYÊN VĂN → chỉ dẫn giọng đọc phải nằm trong speech_metadata.style
+//   - Không đổi accent trong style → chọn giọng vùng miền (Voice Library / Voice design)
+// Model đời cũ (3.1 / 2.5) vẫn dùng generateContent + Audio Prompting nhúng trong prompt (getPrompt).
+// ================================================================
+export type VoiceRegion = 'NORTH' | 'SOUTH';
+
+const TTS_LITE = 'gemini-3.8-flash-lite-tts';
+const TTS_FLASH = 'gemini-3.8-flash-tts';
+const TTS_31 = 'gemini-3.1-flash-tts-preview';
+const TTS_25_FLASH = 'gemini-2.5-flash-preview-tts';
+const TTS_25_PRO = 'gemini-2.5-pro-preview-tts'; // PAID ONLY
+
+const isTts38 = (model: string) => model.startsWith('gemini-3.8-');
+
+// Model trả 404/NOT_FOUND thì bỏ qua cho các lần gọi sau (trong phiên chạy)
+const deadTtsModels = new Set<string>();
+
+// Cache giọng vùng miền đã tra cứu (region:gender → voice id | null)
+const regionalVoiceCache = new Map<string, string | null>();
+
+const shuffleArray = <T>(arr: T[]): T[] => {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+};
+
+// Bỏ header WAV (44 byte, "RIFF") nếu có → luôn trả PCM thô 24kHz/16-bit/mono như logic cũ
+const stripWavHeader = (bytes: Uint8Array): Uint8Array =>
+  bytes.length > 44 && bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46
+    ? bytes.subarray(44)
+    : bytes;
+
+// Tìm giọng tiếng Việt theo vùng miền.
+// Ưu tiên 1: biến môi trường (có thể là voice_... từ Voice design)
+//   VITE_GEMINI_VOICE_VI_NORTH_MALE / _NORTH_FEMALE / _SOUTH_MALE / _SOUTH_FEMALE
+// Ưu tiên 2: Extended Voice Library (ai.voices.list) lọc vi-VN + từ khóa vùng miền
+// Không thấy → null (dùng giọng prebuilt mặc định)
+const resolveRegionalVoice = async (
+  ai: GoogleGenAI,
+  region: VoiceRegion,
+  gender: 'MALE' | 'FEMALE'
+): Promise<string | null> => {
+  const cacheKey = `${region}:${gender}`;
+  if (regionalVoiceCache.has(cacheKey)) return regionalVoiceCache.get(cacheKey) ?? null;
+
+  const envVoice = (import.meta.env as any)?.[`VITE_GEMINI_VOICE_VI_${region}_${gender}`];
+  if (typeof envVoice === 'string' && envVoice.trim()) {
+    regionalVoiceCache.set(cacheKey, envVoice.trim());
+    return envVoice.trim();
+  }
+
+  let found: string | null = null;
+  try {
+    const res: any = await (ai as any).voices?.list?.({
+      language_code: ['vi-VN'],
+      gender: [gender.toLowerCase()],
+      page_size: 100,
+    });
+    const voices: any[] = res?.voices || [];
+    const re = region === 'NORTH'
+      ? /\bnorth(ern)?\b|\bhanoi\b|ha noi|miền bắc|hà nội/i
+      : /\bsouth(ern)?\b|\bsaigon\b|sai gon|ho chi minh|miền nam|sài gòn|hồ chí minh/i;
+    const hit = voices.find(v => re.test(`${v.accent || ''} ${v.display_name || ''} ${v.description || ''}`));
+    found = hit?.id || null;
+  } catch (err) {
+    console.warn('[TTS] Không tra được Voice Library, dùng giọng prebuilt:', err);
+  }
+  regionalVoiceCache.set(cacheKey, found);
+  return found;
+};
+
 export const generateGeminiVoice = async (
   text: string,
   voiceLang: string,
@@ -787,17 +870,34 @@ export const generateGeminiVoice = async (
   apiKeys: string[],
   outputLanguage: 'EN' | 'VN',
   useProjectKey: boolean = true,
-  voiceQuality?: string
+  voiceQuality?: string,
+  voiceRegion?: VoiceRegion,        // MỚI: 'NORTH' (Bắc) | 'SOUTH' (Nam) — chỉ có tác dụng với tiếng Việt
+  adminFreeKeys: string[] = [],     // MỚI: key free từ sheet/admin (ưu tiên trước)
+  adminPaidKeys: string[] = []      // MỚI: key trả phí từ sheet/admin (dùng sau cùng)
 ): Promise<string> => {
-  const finalKeys = resolveKeys(apiKeys, useProjectKey);
+  // ── Thứ tự key: FREE → PAID → key chưa rõ loại ──────────────────────────
+  // useProjectKey=false (người dùng dùng key riêng) → giữ nguyên logic cũ qua resolveKeys
+  const { freeKeys, paidKeys } = resolveImageKeys(apiKeys, adminFreeKeys, adminPaidKeys);
+  const tiered = useProjectKey && (freeKeys.length > 0 || paidKeys.length > 0);
+  const freeKeySet = new Set(freeKeys);
+  const paidKeySet = new Set(paidKeys);
+
+  const finalKeys = tiered
+    ? Array.from(new Set([
+        ...shuffleArray(freeKeys),
+        ...shuffleArray(paidKeys),
+        ...resolveKeys(apiKeys, useProjectKey).filter(k => !freeKeySet.has(k) && !paidKeySet.has(k)),
+      ])).filter(Boolean)
+    : resolveKeys(apiKeys, useProjectKey);
   
   if (finalKeys.length === 0) {
     const error = new Error("API Key missing. Please select an API key to continue.");
     (error as any).isKeyError = true;
     throw error;
   }
- 
-  const langName = voiceLang === 'vi-VN' ? 'Vietnamese' : 
+
+  const isVi = typeof voiceLang === 'string' && voiceLang.startsWith('vi');
+  const langName = isVi ? 'Vietnamese' : 
                    voiceLang === 'en-US' ? 'English' :
                    voiceLang === 'fr-FR' ? 'French' :
                    voiceLang === 'ru-RU' ? 'Russian' :
@@ -806,18 +906,54 @@ export const generateGeminiVoice = async (
                    voiceLang === 'id-ID' ? 'Indonesian' :
                    voiceLang === 'hi-IN' ? 'Hindi' :
                    voiceLang === 'th-TH' ? 'Thai' : 'English';
- 
+
   const styleText = translate(voiceStyle as any, outputLanguage);
   const qualityText = voiceQuality ? translate(voiceQuality as any, outputLanguage) : '';
- 
+  const region: VoiceRegion | undefined = isVi ? voiceRegion : undefined;
+
+  // Audio Prompting cho phương ngữ — dùng cho model đời cũ (3.1 / 2.5), nhúng trong prompt
+  const getRegionCue = (): string => {
+    if (region === 'NORTH') {
+      return ' Accent: standard Northern Vietnamese (Hà Nội) — crisp and precise articulation, six clearly distinguished tones, clean word endings, measured broadcast-style rhythm.';
+    }
+    if (region === 'SOUTH') {
+      return ' Accent: Southern Vietnamese (Sài Gòn) — warm, relaxed and melodic, slightly softer word endings, friendly natural rhythm.';
+    }
+    return '';
+  };
+
+  // Prompt cho model đời cũ (3.1 / 2.5): chỉ dẫn nằm trong prompt, model tự hiểu và không đọc to
   const getPrompt = (segmentText: string, gender: string) => {
     const deepMaleExtra = gender === 'MALE' ? ' (giọng nam trầm, mạnh mẽ, uy quyền)' : '';
+    const vnPolish = isVi
+      ? ' Speak like a native Vietnamese studio voice-over artist: natural breathing, correct tone marks, no robotic or foreign accent, smooth transitions between words, and natural pauses at commas and full stops.'
+      : '';
     
-    return `Say this text in ${langName} with a ${gender.toLowerCase()} voice${deepMaleExtra}. 
+    return `Say this text in ${langName} with a ${gender.toLowerCase()} voice${deepMaleExtra}.${vnPolish}${getRegionCue()}
 Style: ${styleText}, Quality: ${qualityText}.
+Read ONLY the text after "TEXT:" and never read these instructions aloud.
 TEXT: ${segmentText}`;
   };
- 
+
+  // Style ngắn cho Gemini 3.8 (speech_metadata.style) — KHÔNG đưa accent/giới tính vào đây
+  const getStyleMeta = (gender: string): string => {
+    const parts = [
+      styleText,
+      qualityText,
+      gender === 'MALE' ? 'deep, strong, authoritative' : '',
+      isVi ? 'natural studio narration with clear diction' : '',
+    ].filter(Boolean);
+    return parts.join(', ');
+  };
+
+  // Thứ tự model theo từng key. Có chọn vùng miền → ưu tiên 3.8 Flash (mạnh phương ngữ)
+  const buildModels = (isFreeKey: boolean | null): string[] => {
+    const base = region
+      ? [TTS_FLASH, TTS_LITE, TTS_31, TTS_25_FLASH]
+      : [TTS_LITE, TTS_FLASH, TTS_31, TTS_25_FLASH];
+    return isFreeKey === true ? base : [...base, TTS_25_PRO];
+  };
+
   const rawSegments = text.split(/(\[Giọng Nam\]|\[Giọng Nữ\])/g);
   const segments: { text: string; gender: 'MALE' | 'FEMALE' }[] = [];
   
@@ -833,9 +969,9 @@ TEXT: ${segmentText}`;
       break;
     }
   }
- 
+
   let currentActiveGender: 'MALE' | 'FEMALE' = firstTagInBox || voiceGender;
- 
+
   for (let i = 0; i < rawSegments.length; i++) {
     const part = rawSegments[i];
     if (part === '[Giọng Nam]') {
@@ -851,52 +987,135 @@ TEXT: ${segmentText}`;
       segments.push({ text: trimmed, gender: currentActiveGender });
     }
   }
- 
+
   if (segments.length === 0) return "";
- 
-  const generateChunk = async (chunk: { text: string; gender: 'MALE' | 'FEMALE' }, apiKey: string): Promise<Uint8Array> => {
+
+  const generateChunk = async (
+    chunk: { text: string; gender: 'MALE' | 'FEMALE' },
+    apiKey: string,
+    isFreeKey: boolean | null
+  ): Promise<Uint8Array> => {
     const ai = new GoogleGenAI({ apiKey });
     let retryCount = 0;
     const maxRetries = 5;
- 
-        const execute = async (): Promise<Uint8Array> => {
-      try {
-        const promptText = getPrompt(chunk.text, chunk.gender);
-        // Using consistent models and voice names for stability
-        const voiceName = chunk.gender === 'MALE' ? 'Fenrir' : 'Kore'; // Fenrir is deeper and stronger
-        
-        const response = await ai.models.generateContent({
-          model: "gemini-3.1-flash-tts-preview", // ✅ TTS mới nhất 5/2026 | fallback: gemini-2.5-flash-preview-tts | paid: gemini-2.5-pro-preview-tts
-          contents: [{ role: 'user', parts: [{ text: promptText }] }],
-          config: {
-            responseModalities: [Modality.AUDIO],
-            speechConfig: {
-              voiceConfig: {
-                prebuiltVoiceConfig: { voiceName: voiceName },
-              },
-            },
-            safetySettings: [
-              { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' },
-              { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_NONE' },
-              { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_NONE' },
-              { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' },
-            ]
-          },
-        });
- 
-        const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-        if (base64Audio) {
-          const binaryString = atob(base64Audio);
-          const bytes = new Uint8Array(binaryString.length);
-          for (let i = 0; i < binaryString.length; i++) {
-            bytes[i] = binaryString.charCodeAt(i);
-          }
-          return bytes;
+    const models = buildModels(isFreeKey);
+
+    // Voice mặc định (prebuilt) — Fenrir trầm/mạnh hơn cho nam
+    const defaultVoice = chunk.gender === 'MALE' ? 'Fenrir' : 'Kore';
+    let regionalVoice: string | null = region ? await resolveRegionalVoice(ai, region, chunk.gender) : null;
+
+    const toBytes = (base64Audio: string): Uint8Array => {
+      const binaryString = atob(base64Audio);
+      const bytes = new Uint8Array(binaryString.length);
+      for (let i = 0; i < binaryString.length; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
+      }
+      return stripWavHeader(bytes);
+    };
+
+    const callModel = async (modelName: string): Promise<Uint8Array> => {
+      const voiceName = regionalVoice || defaultVoice;
+
+      // ── Gemini 3.8 TTS: Interactions API + speech_metadata ──
+      if (isTts38(modelName)) {
+        const interactions = (ai as any).interactions;
+        if (!interactions?.create) {
+          // SDK cũ (< 2.24.0) → bỏ qua model 3.8, chuyển sang model đời cũ
+          throw new Error("404 NOT_FOUND: SDK does not support Interactions API");
         }
+        const styleMeta = getStyleMeta(chunk.gender);
+        const interaction = await interactions.create({
+          model: modelName,
+          input: [{
+            type: 'user_input',
+            content: [{
+              type: 'text',
+              text: chunk.text, // nguyên văn — không chèn chỉ dẫn vào đây
+              ...(styleMeta ? { annotations: [{ type: 'speech_metadata', style: styleMeta }] } : {}),
+            }],
+          }],
+          // PCM thô 24kHz/16-bit/mono → giữ nguyên pipeline ghép + đóng WAV phía sau
+          response_format: { type: 'audio', mime_type: 'audio/l16', sample_rate: 24000 },
+          generation_config: { speech_config: [{ voice: voiceName }] },
+        });
+        const b64 = interaction?.output_audio?.data;
+        if (b64) return toBytes(b64);
         throw new Error("No audio data returned");
+      }
+
+      // ── Model đời cũ (3.1 / 2.5): generateContent + Audio Prompting trong prompt ──
+      const promptText = getPrompt(chunk.text, chunk.gender);
+      const response = await ai.models.generateContent({
+        model: modelName,
+        contents: [{ role: 'user', parts: [{ text: promptText }] }],
+        config: {
+          responseModalities: [Modality.AUDIO],
+          speechConfig: {
+            voiceConfig: {
+              prebuiltVoiceConfig: { voiceName: regionalVoice && !regionalVoice.startsWith('voice_') ? regionalVoice : defaultVoice },
+            },
+          },
+          safetySettings: [
+            { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' },
+            { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_NONE' },
+            { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_NONE' },
+            { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' },
+          ]
+        },
+      });
+
+      const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+      if (base64Audio) return toBytes(base64Audio);
+      throw new Error("No audio data returned");
+    };
+
+    // Thử lần lượt các model trên CÙNG một key (mỗi model có quota free riêng) trước khi đổi key
+    const runModels = async (): Promise<Uint8Array> => {
+      let lastModelError: any = null;
+      for (const modelName of models) {
+        if (deadTtsModels.has(modelName)) continue;
+        let voiceRetried = false;
+        while (true) {
+          try {
+            return await callModel(modelName);
+          } catch (error: any) {
+            lastModelError = error;
+            const msg = parseErrorMessage(error);
+            const isNotFound = msg.includes("404") || msg.includes("NOT_FOUND");
+            const isQuota = msg.includes("429") || msg.includes("RESOURCE_EXHAUSTED") || msg.includes("quota") || msg.includes("credits are depleted");
+            const isUnavailable = msg.includes("503") || msg.includes("UNAVAILABLE") || msg.includes("high demand");
+            const isNoAudio = msg.includes("No audio data returned");
+            const isKeyProblem = msg.includes("API key") || msg.includes("401") || msg.includes("403") || msg.includes("PERMISSION_DENIED");
+            const isBadVoice = !isKeyProblem && regionalVoice && !voiceRetried &&
+              (msg.includes("INVALID_ARGUMENT") || msg.toLowerCase().includes("voice"));
+
+            if (isBadVoice) {
+              // Voice vùng miền không dùng được → quay về giọng prebuilt, thử lại model này
+              console.warn(`[TTS] Voice "${regionalVoice}" lỗi, dùng giọng mặc định.`);
+              regionalVoice = null;
+              voiceRetried = true;
+              continue;
+            }
+            if (isNotFound) {
+              deadTtsModels.add(modelName);
+              break; // sang model kế tiếp
+            }
+            if (isQuota || isUnavailable || isNoAudio) {
+              break; // sang model kế tiếp (cùng key)
+            }
+            throw error; // lỗi key/auth/khác → để vòng ngoài đổi key
+          }
+        }
+      }
+      throw lastModelError || new Error("No TTS model available");
+    };
+
+    const execute = async (): Promise<Uint8Array> => {
+      try {
+        return await runModels();
       } catch (error: any) {
         const errorMsg = parseErrorMessage(error);
- 
+
         const isQuota = errorMsg.includes("429") || errorMsg.includes("RESOURCE_EXHAUSTED") || errorMsg.includes("quota") || errorMsg.includes("credits are depleted");
         const isUnavailable = errorMsg.includes("503") || errorMsg.includes("UNAVAILABLE") || errorMsg.includes("high demand");
         
@@ -912,24 +1131,26 @@ TEXT: ${segmentText}`;
             await new Promise(resolve => setTimeout(resolve, delay));
             return await execute();
           }
-          console.warn(`Key (ending ${apiKey.slice(-4)}) hit quota/unavailable. Switching key...`);
+          console.warn(`Key (ending ${apiKey.slice(-4)}) hit quota/unavailable on all TTS models. Switching key...`);
         }
         throw error;
       }
     };
     return await execute();
   };
- 
+
   let lastError: any = null;
-  const startIdx = Math.floor(Math.random() * finalKeys.length);
- 
+  // Có phân tầng free→paid thì bắt đầu từ 0 (đã xáo trộn trong từng nhóm); ngược lại chọn ngẫu nhiên như cũ
+  const startIdx = tiered ? 0 : Math.floor(Math.random() * finalKeys.length);
+
   for (let count = 0; count < finalKeys.length; count++) {
     const i = (startIdx + count) % finalKeys.length;
     const apiKey = finalKeys[i];
+    const isFreeKey: boolean | null = freeKeySet.has(apiKey) ? true : (tiered && paidKeySet.has(apiKey) ? false : null);
     try {
       const pcmChunks: Uint8Array[] = [];
       for (const segment of segments) {
-        const pcm = await generateChunk(segment, apiKey);
+        const pcm = await generateChunk(segment, apiKey, isFreeKey);
         pcmChunks.push(pcm);
       }
       const totalLength = pcmChunks.reduce((acc, curr) => acc + curr.length, 0);
@@ -948,7 +1169,7 @@ TEXT: ${segmentText}`;
     } catch (error: any) {
       lastError = error;
       const errorMsg = parseErrorMessage(error);
- 
+
       const isQuota = errorMsg.includes("429") || errorMsg.includes("RESOURCE_EXHAUSTED") || errorMsg.includes("quota") || errorMsg.includes("credits are depleted");
       const isAuth = errorMsg.includes("API key not valid") || errorMsg.includes("401") || errorMsg.includes("403") || errorMsg.includes("PERMISSION_DENIED");
       
@@ -967,4 +1188,3 @@ TEXT: ${segmentText}`;
   }
   throw lastError;
 };
- 
