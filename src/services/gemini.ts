@@ -412,104 +412,184 @@ export const generateVeoVideo = async ({
   throw new Error(userMessage, { cause: lastError });
 };
  
+// ================================================================
+// GEMINI TEXT (TẠO KỊCH BẢN) — Tháng 10/2026
+// Chiến lược (giống khâu Voice):
+//   1. Tách key: FREE (xáo trộn) → PAID (xáo trộn) → key chưa rõ loại
+//   2. Key FREE : chỉ chạy model free (3.8-flash ưu tiên; đời cũ chỉ dùng khi 404)
+//      Key PAID : chạy gemini-2.5-pro (hàng rào cuối cùng)
+//   3. Lỗi 429 trên key → KHÔNG sleep, KHÔNG thử model khác cùng key → đổi key ngay
+//   4. Chống treo: mỗi lần gọi có timeout cứng, 503/empty → model kế, không chờ
+//
+// Dán đè lên hàm generateGeminiText cũ. Hai tham số cuối là MỚI và có giá trị
+// mặc định → các chỗ gọi cũ không cần sửa. Cần các helper đã có trong file:
+//   resolveKeys, resolveImageKeys, processKeys, parseErrorMessage, sleep, translate
+// ================================================================
+
+const TEXT_FREE_MODELS = [
+  'gemini-3.8-flash',       // ✅ FREE — thông minh nhất, ưu tiên số 1
+  'gemini-3.5-flash',       // ✅ FREE — chỉ dùng nếu 3.8 trả 404 / chưa có
+  'gemini-2.5-flash',       // ✅ FREE — dự phòng cuối cho key free
+];
+
+const TEXT_PAID_MODELS = [
+  'gemini-2.5-pro',         // ❌ PAID — hàng rào cuối cùng
+  'gemini-3.1-pro-preview', // ❌ PAID — chỉ dùng nếu 2.5-pro 404/503
+];
+
+const TEXT_CALL_TIMEOUT_MS = 90000; // chống treo: 1 lần gọi tối đa 90s
+
+const withTimeout = <T,>(p: Promise<T>, ms: number): Promise<T> =>
+  new Promise<T>((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error('TIMEOUT: 503 UNAVAILABLE (client timeout)')), ms);
+    p.then(v => { clearTimeout(t); resolve(v); }, e => { clearTimeout(t); reject(e); });
+  });
+
 export const generateGeminiText = async (
-  prompt: string, 
-  systemInstruction: string, 
+  prompt: string,
+  systemInstruction: string,
   apiKeys: string[],
   lang: 'EN' | 'VN' = 'EN',
-  useProjectKey: boolean = true
+  useProjectKey: boolean = true,
+  adminFreeKeys: string[] = [],   // MỚI: key free từ sheet/admin
+  adminPaidKeys: string[] = []    // MỚI: key trả phí từ sheet/admin
 ): Promise<string> => {
-  const uniqueKeys = resolveKeys(apiKeys, useProjectKey);
-  
-  if (uniqueKeys.length === 0) {
+  // ── 1. Tách key FREE / PAID ─────────────────────────────────
+  // useProjectKey=false (người dùng dùng key riêng) → giữ logic cũ qua resolveKeys
+  const { freeKeys, paidKeys } = resolveImageKeys(apiKeys, adminFreeKeys, adminPaidKeys);
+  const tiered = useProjectKey && (freeKeys.length > 0 || paidKeys.length > 0);
+  const freeKeySet = new Set(freeKeys);
+  const paidKeySet = new Set(paidKeys);
+
+  const finalKeys: string[] = tiered
+    ? Array.from(new Set([
+        ...shuffleArray(freeKeys),
+        ...shuffleArray(paidKeys),
+        ...resolveKeys(apiKeys, useProjectKey).filter(k => !freeKeySet.has(k) && !paidKeySet.has(k)),
+      ])).filter(Boolean)
+    : resolveKeys(apiKeys, useProjectKey);
+
+  if (finalKeys.length === 0) {
     const error = new Error("API Key missing. Please select an API key to continue.");
     (error as any).isKeyError = true;
     throw error;
   }
- 
-  let lastError: any = null;
+
+  // Có phân tầng → bắt đầu từ 0 (free trước, paid sau); không thì chọn ngẫu nhiên như cũ
   const userKeyCount = Array.from(new Set(processKeys(apiKeys))).length;
-  const startIdx = userKeyCount > 0 ? 0 : Math.floor(Math.random() * uniqueKeys.length);
- 
-  for (let count = 0; count < uniqueKeys.length; count++) {
-    const i = (startIdx + count) % uniqueKeys.length;
-    const apiKey = uniqueKeys[i];
+  const startIdx = tiered ? 0 : (userKeyCount > 0 ? 0 : Math.floor(Math.random() * finalKeys.length));
+
+  let lastError: any = null;
+  let sawQuota = false;
+  let sawAuth = false;
+
+  // ── helper phân loại lỗi ────────────────────────────────────
+  const classify = (error: any) => {
+    const msg = parseErrorMessage(error);
+    return {
+      msg,
+      isQuota: msg.includes("429") || msg.includes("RESOURCE_EXHAUSTED") || msg.includes("quota") || msg.includes("credits are depleted"),
+      isAuth: msg.includes("API key not valid") || msg.includes("API key expired") || msg.includes("401") || msg.includes("403") || msg.includes("PERMISSION_DENIED"),
+      isUnavailable: msg.includes("503") || msg.includes("UNAVAILABLE") || msg.includes("high demand"),
+      isNotFound: msg.includes("404") || msg.includes("NOT_FOUND"),
+      isEmpty: msg.includes("EMPTY_RESPONSE"),
+    };
+  };
+
+  for (let count = 0; count < finalKeys.length; count++) {
+    const i = (startIdx + count) % finalKeys.length;
+    const apiKey = finalKeys[i];
     const ai = new GoogleGenAI({ apiKey });
-    
-    const models = [
-      'gemini-3.5-flash',        // ✅ FREE - Mới nhất, nhanh nhất
-      'gemini-3.1-flash-lite',   // ✅ FREE - Nhanh, tiết kiệm
-      'gemini-2.5-flash',        // ✅ FREE - Ổn định
-      'gemini-2.5-pro',          // ❌ PAID (từ 1/4/2026) - gọi cuối
-      'gemini-3.1-pro-preview',  // ❌ PAID - gọi cuối cùng
-    ]; // ⚠️ gemini-1.5-flash đã bị tắt hoàn toàn (trả 404) - đã xoá
-    
+
+    // ── 2. Chọn model theo loại key ───────────────────────────
+    // free  → chỉ model free (không bao giờ chạm model trả phí)
+    // paid  → 2.5-pro làm hàng rào cuối
+    // chưa rõ loại / không phân tầng → free trước rồi paid (giống logic cũ)
+    const isFreeKey = freeKeySet.has(apiKey);
+    const isPaidKey = tiered && paidKeySet.has(apiKey);
+    const models = isFreeKey
+      ? TEXT_FREE_MODELS
+      : isPaidKey
+        ? TEXT_PAID_MODELS
+        : [...TEXT_FREE_MODELS, ...TEXT_PAID_MODELS];
+
+    let switchKey = false; // true = bỏ key này ngay, sang key kế
+
     for (const modelName of models) {
-      try {
-        let retryCount = 0;
-        const maxRetries = 1;
-        
-        const executeWithRetry = async (): Promise<string> => {
-          try {
-            const response = await ai.models.generateContent({
+      if (switchKey) break;
+
+      // Chỉ khi chỉ có 1 key duy nhất mới retry-chờ (không còn key nào để đổi)
+      let retryCount = 0;
+      const maxRetries = finalKeys.length <= 1 ? 1 : 0;
+
+      while (true) {
+        try {
+          const response: any = await withTimeout(
+            ai.models.generateContent({
               model: modelName,
               contents: [{ role: 'user', parts: [{ text: prompt }] }],
-              config: { 
+              config: {
                 systemInstruction: systemInstruction ? { parts: [{ text: systemInstruction }] } : undefined,
-                generationConfig: { maxOutputTokens: 8192 }
-              }
-            });
-            
-            const textResult = response.text || "";
-            if (!textResult && response.candidates && response.candidates.length > 0) {
-              const firstCandidate = response.candidates[0];
-              if (firstCandidate.content && firstCandidate.content.parts) {
-                return firstCandidate.content.parts.map(p => p.text || "").join("") || "";
-              }
-            }
-            return textResult;
-          } catch (error: any) {
-            const errorMsg = parseErrorMessage(error);
- 
-            const isQuota = errorMsg.includes("429") || errorMsg.includes("RESOURCE_EXHAUSTED") || errorMsg.includes("quota") || errorMsg.includes("credits are depleted");
-            const isUnavailable = errorMsg.includes("503") || errorMsg.includes("UNAVAILABLE") || errorMsg.includes("high demand");
-            
-            if ((isQuota || isUnavailable) && retryCount < maxRetries) {
+                maxOutputTokens: 8192, // SDK @google/genai: nằm trực tiếp trong config
+              },
+            }),
+            TEXT_CALL_TIMEOUT_MS
+          );
+
+          let textResult: string = response.text || "";
+          if (!textResult && response.candidates?.length > 0) {
+            const parts = response.candidates[0]?.content?.parts;
+            if (parts) textResult = parts.map((p: any) => p.text || "").join("");
+          }
+
+          if (textResult.trim()) return textResult;
+          throw new Error("EMPTY_RESPONSE: model returned no text");
+        } catch (error: any) {
+          lastError = error;
+          const { msg, isQuota, isAuth, isUnavailable, isNotFound, isEmpty } = classify(error);
+
+          // ── 3. BẺ LUỒNG: 429 / auth → đổi key NGAY, không sleep ──
+          if (isQuota || isAuth) {
+            if (isQuota) sawQuota = true;
+            if (isAuth) sawAuth = true;
+
+            if (finalKeys.length <= 1 && isQuota && retryCount < maxRetries) {
+              // chỉ có đúng 1 key → bắt buộc chờ rồi thử lại
               retryCount++;
-              await sleep(isQuota ? 3000 : 1000);
-              return await executeWithRetry();
+              await sleep(3000);
+              continue;
             }
-            throw error;
+            console.warn(`[Text] Key ${i + 1}/${finalKeys.length} (${isFreeKey ? 'FREE' : isPaidKey ? 'PAID' : '?'}) ${isQuota ? '429' : 'auth'} → đổi key ngay`);
+            switchKey = true;
+            break;
           }
-        };
- 
-        return await executeWithRetry();
-      } catch (error: any) {
-        lastError = error;
-        const errorMsg = parseErrorMessage(error);
- 
-        const isQuota = errorMsg.includes("429") || errorMsg.includes("RESOURCE_EXHAUSTED") || errorMsg.includes("quota") || errorMsg.includes("credits are depleted");
-        const isAuth = errorMsg.includes("API key not valid") || errorMsg.includes("401") || errorMsg.includes("403") || errorMsg.includes("PERMISSION_DENIED");
-        const isUnavailable = errorMsg.includes("503") || errorMsg.includes("UNAVAILABLE") || errorMsg.includes("high demand");
-        const isNotFound = errorMsg.includes("404") || errorMsg.includes("NOT_FOUND");
-        
-        if (isUnavailable || isNotFound) continue;
-        
-        if (isQuota || isAuth) {
-          if (count < uniqueKeys.length - 1) {
-            await sleep(200);
-            break; // Try next key
+
+          // 404 / 503 / timeout / rỗng → model kế trên cùng key (không sleep)
+          if (isNotFound || isUnavailable || isEmpty) {
+            if (isUnavailable && retryCount < maxRetries) {
+              retryCount++;
+              await sleep(1000);
+              continue;
+            }
+            break;
           }
-          let userMsg = errorMsg;
-          if (isQuota) userMsg = `${translate('ALL_KEYS_FAILED', lang)}\n\n${translate('QUOTA_HINT', lang)}`;
-          else if (isAuth) userMsg = translate('AUTH_ERROR', lang);
-          lastError = new Error(userMsg);
+
+          // Lỗi lạ (400 safety, v.v.) → thử model kế; nếu hết model sẽ ném lastError
+          console.warn(`[Text] ${modelName} lỗi khác:`, msg);
           break;
         }
       }
     }
   }
-  throw lastError;
+
+  // ── Hết sạch key/model ──────────────────────────────────────
+  if (sawQuota) {
+    throw new Error(`${translate('ALL_KEYS_FAILED', lang)}\n\n${translate('QUOTA_HINT', lang)}`, { cause: lastError });
+  }
+  if (sawAuth && !lastError?.message?.includes("EMPTY_RESPONSE")) {
+    throw new Error(translate('AUTH_ERROR', lang), { cause: lastError });
+  }
+  throw lastError || new Error(translate('ALL_KEYS_FAILED', lang));
 };
  
 export const generateGeminiImage = async (
