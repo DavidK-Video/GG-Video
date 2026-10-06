@@ -150,85 +150,107 @@ const TextBlockItem: React.FC<TextBlockItemProps> = React.memo(({
       className={`p-4 rounded-2xl border transition-all relative group cursor-pointer ${block.selected ? 'bg-indigo-50/50 border-indigo-200 shadow-sm' : 'bg-white border-slate-100 opacity-60'}`}
       onClick={() => !isEditing && toggleSelectBlock(block.id)}
     >
-      <div className="absolute top-2 right-2 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-        {isEditing ? (
-          <>
-            <button 
-              onClick={(e) => {
-                e.stopPropagation();
-                saveEditBlock(block.id);
-              }}
-              className="p-1.5 text-emerald-600 hover:bg-emerald-50 rounded-lg transition"
-            >
-              <Save size={14} />
-            </button>
-            <button 
-              onClick={(e) => {
-                e.stopPropagation();
-                cancelEditBlock();
-              }}
-              className="p-1.5 text-slate-400 hover:bg-slate-50 rounded-lg transition"
-            >
-              <X size={14} />
-            </button>
-          </>
-        ) : (
-          <>
-            <button 
-              onClick={(e) => {
-                e.stopPropagation();
-                startEditingBlock(block);
-              }}
-              className="p-1.5 text-indigo-400 hover:text-indigo-600 transition"
-            >
-              <Pencil size={14} />
-            </button>
-            <button 
-              onClick={(e) => {
-                e.stopPropagation();
-                removeGeneratedBlock(block.id);
-              }}
-              className="p-1.5 text-slate-300 hover:text-red-500 transition"
-            >
-              <Trash2 size={14} />
-            </button>
-          </>
-        )}
-      </div>
+      {!isEditing && (
+        <div className="absolute top-2.5 right-2.5 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+          <button 
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              startEditingBlock(block);
+            }}
+            className="p-1.5 text-indigo-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition"
+            title="Chỉnh sửa văn bản"
+          >
+            <Pencil size={14} />
+          </button>
+          <button 
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              removeGeneratedBlock(block.id);
+            }}
+            className="p-1.5 text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition"
+            title="Xóa đoạn này"
+          >
+            <Trash2 size={14} />
+          </button>
+        </div>
+      )}
       <div className="flex items-start gap-3">
         <div className="mt-1">
           {block.selected ? <CheckSquare size={16} className="text-indigo-600" /> : <Square size={16} className="text-slate-300" />}
         </div>
         {isEditing ? (
-          <div className="relative flex-1">
-            <textarea
-              value={editingText}
-              onChange={(e) => setEditingText(e.target.value)}
-              className="w-full bg-white border border-blue-200 rounded-xl p-2 pr-12 text-sm font-medium focus:ring-2 focus:ring-blue-500 outline-none min-h-[80px] resize-none"
-              autoFocus
-              onClick={(e) => e.stopPropagation()}
-            />
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                toggleSpeechToTextEditing(block.id);
-              }}
-              className={`absolute top-2 right-2 p-1.5 rounded-lg border transition shadow-sm active:scale-95 flex items-center justify-center ${
-                recordingEditingId === block.id
-                  ? 'bg-red-50 border-red-200 text-red-600 animate-pulse'
-                  : 'bg-slate-50 border-slate-100 text-slate-400 hover:text-blue-600 hover:bg-blue-50'
-              }`}
-              title="Đọc văn bản chỉnh sửa (Micro)"
-            >
-              {recordingEditingId === block.id ? (
-                <div className="relative flex items-center justify-center">
-                  <span className="animate-ping absolute inline-flex h-2.5 w-2.5 rounded-full bg-red-400 opacity-75"></span>
-                  <Mic size={12} className="relative text-red-600" />
-                </div>
-              ) : (
-                <Mic size={12} />
-              )}
-            </button>
+          <div className="flex-1 space-y-2">
+            <div className="relative">
+              <textarea
+                value={editingText}
+                onChange={(e) => setEditingText(e.target.value)}
+                className="w-full bg-white border-2 border-indigo-300 focus:border-indigo-500 rounded-xl p-3 pr-11 text-sm font-medium focus:ring-2 focus:ring-indigo-200 outline-none min-h-[96px] resize-y shadow-inner leading-relaxed"
+                autoFocus
+                placeholder="Nhập nội dung chỉnh sửa..."
+                onClick={(e) => e.stopPropagation()}
+              />
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  toggleSpeechToTextEditing(block.id);
+                }}
+                className={`absolute top-2.5 right-2.5 p-1.5 rounded-lg border transition shadow-sm active:scale-95 flex items-center justify-center ${
+                  recordingEditingId === block.id
+                    ? 'bg-red-50 border-red-300 text-red-600 animate-pulse ring-2 ring-red-200'
+                    : 'bg-slate-50 border-slate-200 text-slate-500 hover:text-indigo-600 hover:bg-indigo-50'
+                }`}
+                title="Đọc văn bản chỉnh sửa (Micro)"
+              >
+                {recordingEditingId === block.id ? (
+                  <div className="relative flex items-center justify-center">
+                    <span className="animate-ping absolute inline-flex h-2.5 w-2.5 rounded-full bg-red-400 opacity-75"></span>
+                    <Mic size={14} className="relative text-red-600" />
+                  </div>
+                ) : (
+                  <Mic size={14} />
+                )}
+              </button>
+            </div>
+
+            {/* Thanh công cụ Lưu và Hủy đặt riêng biệt, tuyệt đối không bị Micro che khuất */}
+            <div className="flex items-center justify-between pt-1">
+              <span className="text-[11px] text-slate-400 font-medium">
+                {recordingEditingId === block.id ? (
+                  <span className="text-red-500 font-bold animate-pulse flex items-center gap-1">
+                    ● Micro đang lắng nghe giọng đọc...
+                  </span>
+                ) : (
+                  <span>Có thể bấm Micro để nói thêm hoặc sửa tay</span>
+                )}
+              </span>
+              <div className="flex items-center gap-2">
+                <button 
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    cancelEditBlock();
+                  }}
+                  className="px-3 py-1.5 text-xs font-bold text-slate-500 bg-slate-100 hover:bg-slate-200 rounded-lg transition flex items-center gap-1"
+                >
+                  <X size={13} />
+                  <span>Hủy</span>
+                </button>
+                <button 
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    saveEditBlock(block.id);
+                  }}
+                  className="px-3.5 py-1.5 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 active:scale-95 shadow-sm rounded-lg transition flex items-center gap-1.5"
+                >
+                  <Save size={13} />
+                  <span>Lưu</span>
+                </button>
+              </div>
+            </div>
           </div>
         ) : (
           <p className="text-sm font-medium text-slate-700 leading-relaxed whitespace-pre-wrap">{block.text}</p>
@@ -917,56 +939,61 @@ export const PromptToVoice: React.FC<PromptToVoiceProps> = ({ outputLanguage, pr
             </button>
           </div>
 
-          {/* Hướng dẫn khẩu lệnh & Thẻ chuyển giọng: Gọn 1 dòng tinh tế, bấm mở/đóng, tự động thu gọn tránh rối mắt */}
-          <div className={`border border-blue-100 rounded-2xl bg-gradient-to-r from-blue-50/70 to-indigo-50/70 overflow-hidden transition-all shadow-xs ${isInputFocused ? 'hidden md:block' : 'block'}`}>
-            <button
-              type="button"
-              onClick={() => setShowVoiceGuide(!showVoiceGuide)}
-              className="w-full px-3.5 py-2 flex items-center justify-between text-left text-blue-900 hover:bg-blue-100/40 transition cursor-pointer"
-            >
-              <div className="flex items-center gap-2 text-[11px] font-bold">
-                <span className="text-sm">💡</span>
-                <span className="truncate">
-                  {outputLanguage === 'VN' 
-                    ? 'Mẹo Micro: Nói "đây là giọng nam/nữ" tự điền thẻ [Giọng Nam]/[Giọng Nữ]' 
-                    : 'Mic Tip: Say "voice male/female" to insert tags [Giọng Nam]/[Giọng Nữ]'}
-                </span>
-              </div>
-              <div className="flex items-center gap-1.5 text-[9.5px] font-bold text-blue-700 bg-white/90 px-2 py-0.5 rounded-lg border border-blue-200/80 shrink-0">
-                <span>{showVoiceGuide ? (outputLanguage === 'VN' ? 'Đóng lại' : 'Hide') : (outputLanguage === 'VN' ? 'Xem chi tiết' : 'View tips')}</span>
-                <span className="text-[8px]">{showVoiceGuide ? '▲' : '▼'}</span>
-              </div>
-            </button>
+          {/* Hướng dẫn khẩu lệnh & Thẻ chuyển giọng: Gọn 1 dòng tinh tế, bấm mở/đóng, tự động ẩn khi văn bản kịch bản đã tạo để tránh rối giao diện */}
+          {generatedTextBlocks.length === 0 && (
+            <div className={`border border-blue-100 rounded-2xl bg-gradient-to-r from-blue-50/70 to-indigo-50/70 overflow-hidden transition-all shadow-xs ${isInputFocused ? 'hidden md:block' : 'block'}`}>
+              <button
+                type="button"
+                onClick={() => setShowVoiceGuide(!showVoiceGuide)}
+                className="w-full px-3.5 py-2 flex items-center justify-between text-left text-blue-900 hover:bg-blue-100/40 transition cursor-pointer"
+              >
+                <div className="flex items-center gap-2 text-[11px] font-bold">
+                  <span className="text-sm">💡</span>
+                  <span className="truncate">
+                    {outputLanguage === 'VN' 
+                      ? 'Mẹo Micro: Nói "đây là giọng nam/nữ" tự điền thẻ [Giọng Nam]/[Giọng Nữ] (đầu hoặc cuối câu)' 
+                      : 'Mic Tip: Say "voice male/female" to insert tags [Giọng Nam]/[Giọng Nữ]'}
+                  </span>
+                </div>
+                <div className="flex items-center gap-1.5 text-[9.5px] font-bold text-blue-700 bg-white/90 px-2 py-0.5 rounded-lg border border-blue-200/80 shrink-0">
+                  <span>{showVoiceGuide ? (outputLanguage === 'VN' ? 'Đóng lại' : 'Hide') : (outputLanguage === 'VN' ? 'Xem chi tiết' : 'View tips')}</span>
+                  <span className="text-[8px]">{showVoiceGuide ? '▲' : '▼'}</span>
+                </div>
+              </button>
 
-            {showVoiceGuide && (
-              <div className="p-3.5 border-t border-blue-100/70 text-[11px] text-slate-700 space-y-2.5 bg-white/70 animate-in slide-in-from-top-1 duration-150">
-                <div className="space-y-1">
-                  <p className="font-bold text-blue-950 text-[10px] uppercase tracking-wider flex items-center gap-1.5">
-                    🎙️ CÁC CÂU LỆNH NÓI VÀO MICRO TỰ ĐỘNG CHUYỂN THÀNH THẺ:
-                  </p>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[10px]">
-                    <div className="bg-white p-2.5 rounded-xl border border-slate-100 shadow-2xs space-y-1">
-                      <span className="text-slate-500 font-medium">Khi bạn nói một trong các câu:</span>
-                      <p className="font-mono text-blue-700 font-bold bg-blue-50/60 p-1 rounded">"đây là giọng nam" / "thêm giọng nam" / "đóng vai giọng nam" / "giọng nam"</p>
-                      <p className="text-emerald-700 font-bold text-[9.5px]">➔ Tự động chèn thẻ: <span className="bg-blue-100 text-blue-800 px-1 py-0.5 rounded">[Giọng Nam]</span></p>
-                    </div>
-                    <div className="bg-white p-2.5 rounded-xl border border-slate-100 shadow-2xs space-y-1">
-                      <span className="text-slate-500 font-medium">Khi bạn nói một trong các câu:</span>
-                      <p className="font-mono text-pink-700 font-bold bg-pink-50/60 p-1 rounded">"đây là giọng nữ" / "thêm giọng nữ" / "đóng vai giọng nữ" / "giọng nữ"</p>
-                      <p className="text-emerald-700 font-bold text-[9.5px]">➔ Tự động chèn thẻ: <span className="bg-pink-100 text-pink-800 px-1 py-0.5 rounded">[Giọng Nữ]</span></p>
+              {showVoiceGuide && (
+                <div className="p-3.5 border-t border-blue-100/70 text-[11px] text-slate-700 space-y-2.5 bg-white/70 animate-in slide-in-from-top-1 duration-150">
+                  <div className="space-y-1">
+                    <p className="font-bold text-blue-950 text-[10px] uppercase tracking-wider flex items-center gap-1.5">
+                      🎙️ CÁC CÂU LỆNH NÓI VÀO MICRO TỰ ĐỘNG CHUYỂN THÀNH THẺ:
+                    </p>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[10px]">
+                      <div className="bg-white p-2.5 rounded-xl border border-slate-100 shadow-2xs space-y-1">
+                        <span className="text-slate-500 font-medium">Khi bạn nói một trong các câu:</span>
+                        <p className="font-mono text-blue-700 font-bold bg-blue-50/60 p-1 rounded">"đây là giọng nam" / "thêm giọng nam" / "đóng vai giọng nam" / "giọng nam"</p>
+                        <p className="text-emerald-700 font-bold text-[9.5px]">➔ Tự động chèn thẻ: <span className="bg-blue-100 text-blue-800 px-1 py-0.5 rounded">[Giọng Nam]</span></p>
+                      </div>
+                      <div className="bg-white p-2.5 rounded-xl border border-slate-100 shadow-2xs space-y-1">
+                        <span className="text-slate-500 font-medium">Khi bạn nói một trong các câu:</span>
+                        <p className="font-mono text-pink-700 font-bold bg-pink-50/60 p-1 rounded">"đây là giọng nữ" / "thêm giọng nữ" / "đóng vai giọng nữ" / "giọng nữ"</p>
+                        <p className="text-emerald-700 font-bold text-[9.5px]">➔ Tự động chèn thẻ: <span className="bg-pink-100 text-pink-800 px-1 py-0.5 rounded">[Giọng Nữ]</span></p>
+                      </div>
                     </div>
                   </div>
-                </div>
 
-                <div className="pt-1.5 border-t border-blue-100/60">
-                  <p className="text-[10px] text-slate-600">
-                    <span className="font-bold text-slate-800">Cấu trúc mẫu 2 giọng liền mạch: </span>
-                    <code className="bg-white px-1.5 py-0.5 rounded border border-slate-200 text-slate-800 font-mono text-[9.5px]">[Giọng Nam] Chào bạn! [Giọng Nữ] Hôm nay chúng ta cùng bắt đầu...</code>
-                  </p>
+                  <div className="pt-1.5 border-t border-blue-100/60 space-y-1">
+                    <p className="text-[10px] text-slate-600">
+                      <span className="font-bold text-slate-800">Hỗ trợ linh hoạt CẢ 2 CÁCH ĐẶT THẺ:</span>
+                    </p>
+                    <p className="text-[9.5px] text-slate-600 font-mono bg-white p-1.5 rounded border border-slate-200">
+                      • Đặt cuối câu: <span className="text-indigo-600">Câu thoại 1 [giọng nam]. Câu thoại 2 [giọng nữ].</span><br />
+                      • Đặt đầu câu: <span className="text-indigo-600">[Giọng Nam] Câu thoại 1... [Giọng Nữ] Câu thoại 2...</span>
+                    </p>
+                  </div>
                 </div>
-              </div>
-            )}
-          </div>
+              )}
+            </div>
+          )}
 
           {prompts.map((prompt) => (
             <PromptBlockItem
@@ -1158,7 +1185,7 @@ export const PromptToVoice: React.FC<PromptToVoiceProps> = ({ outputLanguage, pr
                       <option value="FEMALE:QUALITY_GENTLE">Nữ C: Dịu dàng, Tâm sự (Kore)</option>
                     </optgroup>
                     <optgroup label="GIỌNG NAM (MALE PERSONAS)">
-                      <option value="MALE:QUALITY_POWERFUL">Nam A: Trầm ấm, Uy quyền (Charon)</option>
+                      <option value="MALE:QUALITY_POWERFUL">Nam A: Chuẩn Miền Bắc, Trầm ấm uy quyền (Charon)</option>
                       <option value="MALE:QUALITY_YOUTHFUL">Nam B: Trẻ trung, Năng nổ (Puck)</option>
                       <option value="MALE:QUALITY_GENTLE">Nam C: Điềm đạm, Thuyết minh (Orus)</option>
                     </optgroup>
