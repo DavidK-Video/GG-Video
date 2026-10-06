@@ -265,7 +265,9 @@ const App: React.FC = () => {
 
   const deductCredit = async (amount: number, action: any = "VIDEO") => {
     // Luôn cố gắng trừ xu để đồng bộ với Sheet, ngay cả với Admin nếu họ muốn theo dõi hạn mức
-    const isPro = profile.accountType?.includes('pro') || profile.plan_name?.includes('pro');
+    const isPro = profile.accountType?.toLowerCase().includes('pro') || 
+                  profile.plan_name?.toLowerCase().includes('pro') || 
+                  userPlan?.toLowerCase().includes('pro');
     if (credit < amount && !profile.isAdmin && !isPro) {
       alert(translate('INSUFFICIENT_CREDITS', outputLanguage));
       return false;
@@ -280,6 +282,19 @@ const App: React.FC = () => {
       if (profile.isAdmin || isPro) return true; // Cứu cánh cho admin/pro nếu lệnh trừ thất bại
       alert(`Lỗi trừ xu: ${result.error || 'Unknown error'}`);
       return false;
+    }
+  };
+
+  const refundCredit = async (amount: number, action: string = "REFUND") => {
+    try {
+      setCredit(prev => Math.max(0, prev + amount));
+      const cleanEmail = (email || '').trim().toLowerCase();
+      if (cleanEmail) {
+        await googleSheetService.deductCredits(cleanEmail, -amount, action as any);
+        console.log(`[Credit] 🔄 Đã hoàn lại ${amount} xu cho ${cleanEmail} (${action})`);
+      }
+    } catch (err) {
+      console.warn("[Credit] Lỗi hoàn xu Sheet:", err);
     }
   };
 
@@ -509,6 +524,7 @@ const App: React.FC = () => {
           hasApiKey={hasApiKey}
           onOpenKeyPicker={handleOpenKeyPicker}
           deductCredit={deductCredit}
+          refundCredit={refundCredit}
           useProjectKey={useProjectKey}
         />
       </div>
@@ -519,6 +535,7 @@ const App: React.FC = () => {
           profile={profile}
           useProjectKey={useProjectKey}
           deductCredit={deductCredit}
+          refundCredit={refundCredit}
           credit={credit}
           userPlan={userPlan as any}
           apiKeys={profile.role === 'admin' ? [...apiKeys, ...adminAllKeys] : apiKeys}
