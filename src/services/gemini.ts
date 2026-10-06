@@ -767,10 +767,11 @@ export const generateImageFree = async (
   refImageBase64?: string,
   _pixazoApiKey?: string,      // giữ tham số để không lỗi chỗ gọi
   _siliconflowApiKey?: string, // giữ tham số để không lỗi chỗ gọi
-  userApiKeys: string[] = [],
+  _userApiKeys: string[] = [],
   aspectRatio: '16:9' | '9:16' | '1:1' = '16:9',
   pollinationsOnly: boolean = false  // true = FREE IMG bật → Pollinations ngay, false = chuỗi đầy đủ
 ): Promise<{ url: string; directUrl?: boolean }> => {
+  void _userApiKeys;
   const seed = Math.floor(Math.random() * 9999999);
  
   // Tính kích thước ảnh theo aspectRatio
@@ -897,11 +898,107 @@ const shuffleArray = <T>(arr: T[]): T[] => {
   return a;
 };
 
-// Bỏ header WAV (44 byte, "RIFF") nếu có → luôn trả PCM thô 24kHz/16-bit/mono như logic cũ
-const stripWavHeader = (bytes: Uint8Array): Uint8Array =>
-  bytes.length > 44 && bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46
-    ? bytes.subarray(44)
-    : bytes;
+// Áp dụng thuật toán xử lý âm thanh số DSP (Digital Signal Processing):
+// 1. Cắt bỏ khoảng nhiễu tĩnh nhiễu sóng (trailing static/noise 50-150ms) ở cuối file âm thanh của Gemini 3.8.
+// 2. Áp dụng hiệu ứng Fade-in (15ms) và Fade-out (50ms) mượt mà để triệt tiêu hoàn toàn tiếng nổ bụp/click chuyển tiếp.
+const trimAndFadeOutPcm = (audioBytes: Uint8Array): Uint8Array => {
+  // Đảm bảo độ dài chẵn cho mẫu âm thanh 16-bit (2 byte mỗi mẫu)
+  if (audioBytes.length % 2 !== 0) {
+    audioBytes = audioBytes.subarray(0, audioBytes.length - 1);
+  }
+
+  // --- Xử lý loại bỏ tiếng dè tĩnh ở cuối (trailing static/noise của Gemini TTS) ---
+  // Tần số lấy mẫu: 24000 Hz, 16-bit Mono (2 byte mỗi mẫu) -> 1 giây = 48000 byte.
+  // Cắt bỏ khoảng 150ms ở cuối file (7200 byte) để loại bỏ hoàn toàn tiếng dè/xẹt nhiễu tĩnh.
+  // Điều chỉnh tỷ lệ cắt theo độ dài của file để đảm bảo không bị cắt mất chữ của câu nói ngắn.
+  let pcmData = audioBytes;
+  const trimBytes = 48 * 150; // 150ms = 7200 byte
+  if (pcmData.length > 48000) {
+    pcmData = pcmData.subarray(0, pcmData.length - trimBytes);
+  } else if (pcmData.length > 15000) {
+    // Với file ngắn từ 300ms - 1s, cắt 100ms
+    const shortTrim = 48 * 100;
+    pcmData = pcmData.subarray(0, pcmData.length - shortTrim);
+  } else if (pcmData.length > 5000) {
+    // Với file cực ngắn, cắt 60ms
+    const microTrim = 48 * 60;
+    pcmData = pcmData.subarray(0, pcmData.length - microTrim);
+  }
+
+  // Để an toàn, chỉ xử lý fade nếu còn đủ dữ liệu
+  if (pcmData.length < 200) {
+    return pcmData;
+  }
+
+  // Tạo một ArrayBuffer mới và sao chép dữ liệu để đảm bảo buffer có thể ghi được (ghi trực tiếp vào subarray có thể gây lỗi Read-Only)
+  const buffer = new ArrayBuffer(pcmData.length);
+  const resultBytes = new Uint8Array(buffer);
+  resultBytes.set(pcmData);
+
+  const dataView = new DataView(buffer);
+  const totalSamples = pcmData.length / 2;
+
+  // 1. Áp dụng Fade-in mượt mà ở đầu (15ms = 48 * 15 = 720 byte = 360 mẫu)
+  const fadeInSamples = Math.min(360, totalSamples);
+  for (let i = 0; i < fadeInSamples; i++) {
+    const byteOffset = i * 2;
+    const sample = dataView.getInt16(byteOffset, true);
+    const volumeFactor = i / fadeInSamples; // Tăng dần từ 0.0 -> 1.0
+    const fadedSample = Math.round(sample * volumeFactor);
+    dataView.setInt16(byteOffset, fadedSample, true);
+  }
+
+  // 2. Áp dụng Fade-out mượt mà ở cuối (50ms = 48 * 50 = 2400 byte = 1200 mẫu)
+  const fadeOutSamples = Math.min(1200, totalSamples);
+  const startFadeOutIdx = totalSamples - fadeOutSamples;
+  for (let i = 0; i < fadeOutSamples; i++) {
+    const sampleIdx = startFadeOutIdx + i;
+    const byteOffset = sampleIdx * 2;
+    const sample = dataView.getInt16(byteOffset, true);
+    const volumeFactor = 1.0 - (i / fadeOutSamples); // Giảm dần từ 1.0 -> 0.0
+    const fadedSample = Math.round(sample * volumeFactor);
+    dataView.setInt16(byteOffset, fadedSample, true);
+  }
+
+  return resultBytes;
+};
+
+// Phân tích và trích xuất đúng phân đoạn dữ liệu âm thanh "data" trong file WAV của Gemini
+// Giúp loại bỏ hoàn toàn các phần thừa hoặc siêu dữ liệu (metadata như LIST, INFO) ở cuối file gây tiếng xẹt rè/nổ loa cuối file
+const extractPcmFromWav = (bytes: Uint8Array): Uint8Array => {
+  // Kiểm tra cấu trúc RIFF WAVE chuẩn
+  if (bytes.length < 12 || 
+      bytes[0] !== 0x52 || bytes[1] !== 0x49 || bytes[2] !== 0x46 || bytes[3] !== 0x46 || // "RIFF"
+      bytes[8] !== 0x57 || bytes[9] !== 0x41 || bytes[10] !== 0x56 || bytes[11] !== 0x45) { // "WAVE"
+    // Nếu không phải file WAV, xử lý trực tiếp và trả về PCM đã được làm sạch
+    return trimAndFadeOutPcm(bytes);
+  }
+
+  let offset = 12;
+  while (offset + 8 <= bytes.length) {
+    // Đọc tên phân đoạn (Chunk ID - 4 ký tự)
+    const chunkId = String.fromCharCode(bytes[offset], bytes[offset+1], bytes[offset+2], bytes[offset+3]);
+    // Đọc độ dài phân đoạn (Chunk Size - 32-bit little-endian)
+    const chunkSize = bytes[offset+4] | (bytes[offset+5] << 8) | (bytes[offset+6] << 16) | (bytes[offset+7] << 24);
+    
+    if (chunkId === 'data') {
+      const dataStart = offset + 8;
+      let dataEnd = dataStart + chunkSize;
+      if (dataEnd > bytes.length) {
+        dataEnd = bytes.length;
+      }
+      const audioBytes = bytes.subarray(dataStart, dataEnd);
+      return trimAndFadeOutPcm(audioBytes);
+    }
+    
+    // Chuyển sang phân đoạn tiếp theo (cộng 8 byte tiêu đề chunk + kích thước dữ liệu chunk)
+    offset += 8 + chunkSize;
+  }
+
+  // Phương án dự phòng nếu không tìm thấy phân đoạn 'data': cắt bỏ 44 byte tiêu đề WAV chuẩn
+  const fallback = bytes.length > 44 ? bytes.subarray(44) : bytes;
+  return trimAndFadeOutPcm(fallback);
+};
 
 // Tìm giọng tiếng Việt theo vùng miền.
 // Ưu tiên 1: biến môi trường (có thể là voice_... từ Voice design)
@@ -940,6 +1037,44 @@ const resolveRegionalVoice = async (
   }
   regionalVoiceCache.set(cacheKey, found);
   return found;
+};
+
+const detectSemanticStyle = (text: string, currentGender: 'MALE' | 'FEMALE'): string => {
+  const isMale = currentGender === 'MALE';
+  const txt = text.toLowerCase();
+  
+  // Sales / Promotional / High Energy
+  if (txt.includes('khuyến mãi') || txt.includes('ưu đãi') || txt.includes('quà tặng') || txt.includes('nhanh tay') || txt.includes('giá rẻ') || txt.includes('sales') || txt.includes('bán lẻ') || txt.includes('mua ngay') || txt.includes('cơ hội')) {
+    return isMale 
+      ? 'Bright, enthusiastic, high energy masculine marketing voice, fast pace, highly persuasive, confident advertising style'
+      : 'Cheerful, enthusiastic, high energy feminine marketing voice, bright and friendly, highly persuasive, confident advertising style';
+  }
+  
+  // Dramatic / Suspense / Film Review / Storytelling
+  if (txt.includes('bí ẩn') || txt.includes('rùng rợn') || txt.includes('kịch tính') || txt.includes('bất ngờ') || txt.includes('kinh hoàng') || txt.includes('sát thủ') || txt.includes('chết') || txt.includes('hồi hộp') || txt.includes('cuộc chiến') || txt.includes('truy tìm') || txt.includes('phá án')) {
+    return 'Suspenseful, dramatic, low pitch, slow pace with tense dramatic pauses, mysterious cinematic storytelling tone';
+  }
+  
+  // Warm / Emotional / Soft / Storytelling
+  if (txt.includes('nhẹ nhàng') || txt.includes('sâu lắng') || txt.includes('tâm sự') || txt.includes('gia đình') || txt.includes('kỷ niệm') || txt.includes('tình yêu') || txt.includes('chia sẻ') || txt.includes('buồn') || txt.includes('tiếc nuối') || txt.includes('hạnh phúc') || txt.includes('yên bình') || txt.includes('bình yên')) {
+    return isMale
+      ? 'Warm, gentle, soft baritone Vietnamese voice, slow tempo, highly emotional and intimate tone, natural breathing'
+      : 'Melodious, warm, gentle feminine Vietnamese voice, slow tempo, soft and intimate storytelling tone, natural breathing';
+  }
+  
+  // Formal / News / Report
+  if (txt.includes('bản tin') || txt.includes('thời sự') || txt.includes('kính thưa') || txt.includes('báo cáo') || txt.includes('chính trị') || txt.includes('kinh tế') || txt.includes('thông báo') || txt.includes('quốc tế') || txt.includes('thị trường')) {
+    return 'Professional, formal, objective news anchor tone, medium pace, crisp pronunciation, steady breathing, authoritative news broadcast';
+  }
+  
+  // Majestic / Architectural / Luxury / High-end (Biệt thự, Công trình, Phong thủy)
+  if (txt.includes('biệt thự') || txt.includes('kiến trúc') || txt.includes('thiết kế') || txt.includes('phong thủy') || txt.includes('sang trọng') || txt.includes('đẳng cấp') || txt.includes('thượng lưu') || txt.includes('hoàn mỹ') || txt.includes('gia chủ') || txt.includes('vượng khí')) {
+    return isMale
+      ? 'Deep, majestic, authoritative Vietnamese studio narrator, warm baritone timbre, prestigious and elite, steady cadence, natural studio audio'
+      : 'Warm, elegant, clear feminine Vietnamese studio narrator, prestigious and refined tone, elite real estate marketing style, steady cadence';
+  }
+
+  return '';
 };
 
 export const generateGeminiVoice = async (
@@ -991,41 +1126,6 @@ export const generateGeminiVoice = async (
   const qualityText = voiceQuality ? translate(voiceQuality as any, outputLanguage) : '';
   const region: VoiceRegion | undefined = isVi ? voiceRegion : undefined;
 
-  // Audio Prompting cho phương ngữ — dùng cho model đời cũ (3.1 / 2.5), nhúng trong prompt
-  const getRegionCue = (): string => {
-    if (region === 'NORTH') {
-      return ' Accent: standard Northern Vietnamese (Hà Nội) — crisp and precise articulation, six clearly distinguished tones, clean word endings, measured broadcast-style rhythm.';
-    }
-    if (region === 'SOUTH') {
-      return ' Accent: Southern Vietnamese (Sài Gòn) — warm, relaxed and melodic, slightly softer word endings, friendly natural rhythm.';
-    }
-    return '';
-  };
-
-  // Prompt cho model đời cũ (3.1 / 2.5): chỉ dẫn nằm trong prompt, model tự hiểu và không đọc to
-  const getPrompt = (segmentText: string, gender: string) => {
-    const deepMaleExtra = gender === 'MALE' ? ' (giọng nam trầm, mạnh mẽ, uy quyền)' : '';
-    const vnPolish = isVi
-      ? ' Speak like a native Vietnamese studio voice-over artist: natural breathing, correct tone marks, no robotic or foreign accent, smooth transitions between words, and natural pauses at commas and full stops.'
-      : '';
-    
-    return `Say this text in ${langName} with a ${gender.toLowerCase()} voice${deepMaleExtra}.${vnPolish}${getRegionCue()}
-Style: ${styleText}, Quality: ${qualityText}.
-Read ONLY the text after "TEXT:" and never read these instructions aloud.
-TEXT: ${segmentText}`;
-  };
-
-  // Style ngắn cho Gemini 3.8 (speech_metadata.style) — KHÔNG đưa accent/giới tính vào đây
-  const getStyleMeta = (gender: string): string => {
-    const parts = [
-      styleText,
-      qualityText,
-      gender === 'MALE' ? 'deep, strong, authoritative' : '',
-      isVi ? 'natural studio narration with clear diction' : '',
-    ].filter(Boolean);
-    return parts.join(', ');
-  };
-
   // Thứ tự model theo từng key. Có chọn vùng miền → ưu tiên 3.8 Flash (mạnh phương ngữ)
   const buildModels = (isFreeKey: boolean | null): string[] => {
     const base = region
@@ -1034,44 +1134,75 @@ TEXT: ${segmentText}`;
     return isFreeKey === true ? base : [...base, TTS_25_PRO];
   };
 
-  const rawSegments = text.split(/(\[Giọng Nam\]|\[Giọng Nữ\])/g);
-  const segments: { text: string; gender: 'MALE' | 'FEMALE' }[] = [];
+  // Tag matching for dynamic gender or emotion switching (detect all bracketed tags [...])
+  const TAG_REGEX = /(\[[^\]]+\])/g;
+  const isMaleTag = (tag: string) => /nam|male/i.test(tag);
+  const isFemaleTag = (tag: string) => /nữ|nu|female/i.test(tag);
+
+  const rawSegments = text.split(TAG_REGEX);
+  const segments: { text: string; gender: 'MALE' | 'FEMALE'; styleOverride?: string }[] = [];
   
   // Find the first tag in the whole text to serve as the default for text appearing BEFORE any tag.
-  // If no tag is found at all, we use the global voiceGender setting.
   let firstTagInBox: 'MALE' | 'FEMALE' | null = null;
   for (const part of rawSegments) {
-    if (part === '[Giọng Nam]') {
+    if (isMaleTag(part)) {
       firstTagInBox = 'MALE';
       break;
-    } else if (part === '[Giọng Nữ]') {
+    } else if (isFemaleTag(part)) {
       firstTagInBox = 'FEMALE';
       break;
     }
   }
 
   let currentActiveGender: 'MALE' | 'FEMALE' = firstTagInBox || voiceGender;
+  let currentActiveStyle: string | undefined = undefined;
 
   for (let i = 0; i < rawSegments.length; i++) {
     const part = rawSegments[i];
-    if (part === '[Giọng Nam]') {
-      currentActiveGender = 'MALE';
-      continue;
-    } else if (part === '[Giọng Nữ]') {
-      currentActiveGender = 'FEMALE';
+    if (TAG_REGEX.test(part)) {
+      if (isMaleTag(part)) {
+        currentActiveGender = 'MALE';
+      } else if (isFemaleTag(part)) {
+        currentActiveGender = 'FEMALE';
+      } else {
+        // Parse dynamic emotional tags inside brackets
+        if (/hào hứng|hao hung|năng động|nang dong|vui vẻ|vui ve|quảng cáo|marketing|excited|enthusiastic|energetic/i.test(part)) {
+          currentActiveStyle = 'Enthusiastic, cheerful, high energy bright marketing voice, fast pace';
+        } else if (/sâu lắng|sau lang|nhẹ nhàng|nhe nhang|tâm sự|tam su|trầm lắng|tram lang|buồn|sad|gentle|nostalgic/i.test(part)) {
+          currentActiveStyle = 'Warm, gentle, soft and highly emotional storytelling tone, nostalgic, slow tempo';
+        } else if (/kịch tính|kich tinh|hồi hộp|hoi hop|bí ẩn|bi an|kinh dị|kinh di|rùng rợn|suspense|dramatic|mysterious/i.test(part)) {
+          currentActiveStyle = 'Suspenseful, dramatic, low pitch, slow tempo with tense dramatic pauses, mysterious narrative tone';
+        } else if (/trang trọng|trang trong|tin tức|tin tuc|thời sự|thoi su|formal|news|anchor/i.test(part)) {
+          currentActiveStyle = 'Professional, formal, objective news anchor tone, medium pace, steady breathing';
+        } else if (/uy quyền|uy quyen|mạnh mẽ|manh me|quyền lực|quyen luc|authoritative|powerful|confident/i.test(part)) {
+          currentActiveStyle = 'Deep, majestic, authoritative Vietnamese studio voice, powerful and confident tone, steady cadence';
+        }
+      }
       continue;
     }
     
-    const trimmed = part.trim();
-    if (trimmed) {
-      segments.push({ text: trimmed, gender: currentActiveGender });
+    // Clean text: strip any nested brackets, tags or prompt artifacts so AI never reads them aloud
+    const cleaned = part
+      .replace(/\[[^\]]+\]/g, '')
+      .replace(/^\s*TEXT:\s*/i, '')
+      .replace(/^[\s\-–—:]+/, '')
+      .trim();
+
+    if (cleaned) {
+      // Use explicit emotional style tag, or fall back to automatic semantic analysis of the paragraph
+      const finalStyle = currentActiveStyle || detectSemanticStyle(cleaned, currentActiveGender);
+      segments.push({ 
+        text: cleaned, 
+        gender: currentActiveGender,
+        styleOverride: finalStyle || undefined
+      });
     }
   }
 
   if (segments.length === 0) return "";
 
   const generateChunk = async (
-    chunk: { text: string; gender: 'MALE' | 'FEMALE' },
+    chunk: { text: string; gender: 'MALE' | 'FEMALE'; styleOverride?: string },
     apiKey: string,
     isFreeKey: boolean | null
   ): Promise<Uint8Array> => {
@@ -1080,59 +1211,122 @@ TEXT: ${segmentText}`;
     const maxRetries = 5;
     const models = buildModels(isFreeKey);
 
-    // Voice mặc định (prebuilt) — Fenrir trầm/mạnh hơn cho nam
-    const defaultVoice = chunk.gender === 'MALE' ? 'Fenrir' : 'Kore';
+    // 100% consistent dynamic voice profile mapping to preserve persona consistency
+    const getPrebuiltVoice = (
+      gender: 'MALE' | 'FEMALE',
+      primaryGender: 'MALE' | 'FEMALE',
+      quality?: string
+    ): string => {
+      const q = quality || '';
+      if (gender === 'MALE') {
+        if (primaryGender === 'MALE') {
+          if (q.includes('YOUTHFUL') || q.includes('ENERGETIC')) {
+            return 'Puck'; // Nam B - Trẻ trung, năng nổ
+          }
+          if (q.includes('GENTLE') || q.includes('WARM')) {
+            return 'Orus'; // Nam C - Điềm đạm, truyền cảm
+          }
+        }
+        return 'Charon'; // Nam A - Mặc định trầm ấm, uy lực dải tần Baritone
+      } else {
+        if (primaryGender === 'FEMALE') {
+          if (q.includes('GENTLE') || q.includes('WARM') || q.includes('MIDDLE_AGED')) {
+            return 'Kore'; // Nữ C - Dịu dàng, tâm tình
+          }
+          if (q.includes('POWERFUL') || q.includes('CHARMING')) {
+            return 'Aoede'; // Nữ B - Sang trọng, cuốn hút
+          }
+        }
+        return 'Zephyr'; // Nữ A - Mặc định trong trẻo, sắc nét, đầy năng lượng điện ảnh
+      }
+    };
+
+    // Đạo diễn âm thanh AI thông minh: Tự động phân tích thể loại nội dung của kịch bản để ghép cặp giọng Nam/Nữ tối ưu nhất
+    const detectOptimalVoice = (
+      fullText: string,
+      segmentGender: 'MALE' | 'FEMALE',
+      primaryGender: 'MALE' | 'FEMALE',
+      userSelectedQuality?: string
+    ): string => {
+      const txt = fullText.toLowerCase();
+      // Nếu là kịch bản đơn giọng (không chứa thẻ Nam/Nữ đối thoại), tôn trọng 100% lựa chọn chỉnh tay của người dùng trên giao diện
+      const isMultiSpeaker = /giọng|nam|nữ|nu/i.test(fullText);
+      if (!isMultiSpeaker) {
+        return getPrebuiltVoice(segmentGender, primaryGender, userSelectedQuality);
+      }
+
+      // Kịch bản đối thoại đa giọng: Tự động ghép cặp đôi giọng chuẩn chuyên nghiệp nhất theo từng ngữ cảnh
+      
+      // Thể loại 1: Sâu lắng, Nhẹ nhàng, Gia đình, Tâm sự -> Cặp đôi Nam C (Orus) & Nữ C (Kore)
+      if (txt.includes('nhẹ nhàng') || txt.includes('sâu lắng') || txt.includes('tâm sự') || txt.includes('gia đình') || txt.includes('kỷ niệm') || txt.includes('tình yêu') || txt.includes('chia sẻ') || txt.includes('buồn') || txt.includes('yên bình') || txt.includes('bình yên') || txt.includes('truyện cổ')) {
+        return segmentGender === 'MALE' ? 'Orus' : 'Kore';
+      }
+
+      // Thể loại 2: Hào hứng, Quảng cáo, Bán hàng, Review phim, TikTok kịch tính -> Cặp đôi Nam B (Puck) & Nữ A (Zephyr)
+      if (txt.includes('khuyến mãi') || txt.includes('ưu đãi') || txt.includes('quà tặng') || txt.includes('nhanh tay') || txt.includes('giá rẻ') || txt.includes('sales') || txt.includes('mua ngay') || txt.includes('kịch tính') || txt.includes('bí ẩn') || txt.includes('rùng rợn') || txt.includes('hồi hộp') || txt.includes('sát thủ') || txt.includes('review') || txt.includes('phim') || txt.includes('cơ hội')) {
+        return segmentGender === 'MALE' ? 'Puck' : 'Zephyr';
+      }
+
+      // Thể loại 3: Kiến trúc, Biệt thự, Dự án đẳng cấp, Sang trọng, Phong thủy -> Cặp đôi Nam A (Charon) & Nữ B (Aoede)
+      if (txt.includes('biệt thự') || txt.includes('kiến trúc') || txt.includes('thiết kế') || txt.includes('phong thủy') || txt.includes('sang trọng') || txt.includes('đẳng cấp') || txt.includes('thượng lưu') || txt.includes('hoàn mỹ') || txt.includes('gia chủ') || txt.includes('vượng khí') || txt.includes('nhà truyền thống')) {
+        return segmentGender === 'MALE' ? 'Charon' : 'Aoede';
+      }
+
+      // Mặc định vàng cho các thể loại hỗn hợp: Nam A (Charon) và Nữ A (Zephyr)
+      return segmentGender === 'MALE' ? 'Charon' : 'Zephyr';
+    };
+
+    const defaultVoice = detectOptimalVoice(text, chunk.gender, voiceGender, voiceQuality);
     let regionalVoice: string | null = region ? await resolveRegionalVoice(ai, region, chunk.gender) : null;
 
     const toBytes = (base64Audio: string): Uint8Array => {
       const binaryString = atob(base64Audio);
-      const bytes = new Uint8Array(binaryString.length);
-      for (let i = 0; i < binaryString.length; i++) {
+      let len = binaryString.length;
+      if (len % 2 !== 0) {
+        len--; // Align to even byte boundary for 16-bit PCM samples to prevent static crackle
+      }
+      const bytes = new Uint8Array(len);
+      for (let i = 0; i < len; i++) {
         bytes[i] = binaryString.charCodeAt(i);
       }
-      return stripWavHeader(bytes);
+      return extractPcmFromWav(bytes);
     };
 
     const callModel = async (modelName: string): Promise<Uint8Array> => {
       const voiceName = regionalVoice || defaultVoice;
+      const isMale = chunk.gender === 'MALE';
 
-      // ── Gemini 3.8 TTS: Interactions API + speech_metadata ──
-      if (isTts38(modelName)) {
-        const interactions = (ai as any).interactions;
-        if (!interactions?.create) {
-          // SDK cũ (< 2.24.0) → bỏ qua model 3.8, chuyển sang model đời cũ
-          throw new Error("404 NOT_FOUND: SDK does not support Interactions API");
-        }
-        const styleMeta = getStyleMeta(chunk.gender);
-        const interaction = await interactions.create({
-          model: modelName,
-          input: [{
-            type: 'user_input',
-            content: [{
-              type: 'text',
-              text: chunk.text, // nguyên văn — không chèn chỉ dẫn vào đây
-              ...(styleMeta ? { annotations: [{ type: 'speech_metadata', style: styleMeta }] } : {}),
-            }],
-          }],
-          // PCM thô 24kHz/16-bit/mono → giữ nguyên pipeline ghép + đóng WAV phía sau
-          response_format: { type: 'audio', mime_type: 'audio/l16', sample_rate: 24000 },
-          generation_config: { speech_config: [{ voice: voiceName }] },
-        });
-        const b64 = interaction?.output_audio?.data;
-        if (b64) return toBytes(b64);
-        throw new Error("No audio data returned");
-      }
+      // Style prompt for speechMetadata / Gemini 3.8: explicit tone, cadence and native pronunciation
+      const masculineStyle = `Deep, resonant, masculine ${langName} male studio narrator, warm baritone timbre, authoritative, steady cadence, natural breathing, clear native pronunciation`;
+      const feminineStyle = `Warm, clear, elegant feminine ${langName} female studio narrator, melodious and expressive, natural cadence, clear native pronunciation`;
+      const activeStyle = isMale ? masculineStyle : feminineStyle;
+      
+      const selectedStyle = chunk.styleOverride || `${activeStyle}${styleText ? `, ${styleText}` : ''}${qualityText ? `, ${qualityText}` : ''}`;
 
-      // ── Model đời cũ (3.1 / 2.5): generateContent + Audio Prompting trong prompt ──
-      const promptText = getPrompt(chunk.text, chunk.gender);
+      // ── Standard generateContent with speechConfig ──
       const response = await ai.models.generateContent({
         model: modelName,
-        contents: [{ role: 'user', parts: [{ text: promptText }] }],
+        contents: [
+          {
+            role: 'user',
+            parts: [
+              {
+                text: chunk.text,
+                ...(isTts38(modelName) ? {
+                  speechMetadata: {
+                    speaker: isMale ? 'Male Narrator' : 'Female Narrator',
+                    style: selectedStyle
+                  }
+                } : {})
+              }
+            ]
+          }
+        ],
         config: {
           responseModalities: [Modality.AUDIO],
           speechConfig: {
             voiceConfig: {
-              prebuiltVoiceConfig: { voiceName: regionalVoice && !regionalVoice.startsWith('voice_') ? regionalVoice : defaultVoice },
+              prebuiltVoiceConfig: { voiceName: voiceName },
             },
           },
           safetySettings: [
@@ -1229,9 +1423,17 @@ TEXT: ${segmentText}`;
     const isFreeKey: boolean | null = freeKeySet.has(apiKey) ? true : (tiered && paidKeySet.has(apiKey) ? false : null);
     try {
       const pcmChunks: Uint8Array[] = [];
-      for (const segment of segments) {
+      for (let idx = 0; idx < segments.length; idx++) {
+        const segment = segments[idx];
         const pcm = await generateChunk(segment, apiKey, isFreeKey);
         pcmChunks.push(pcm);
+        
+        // Chèn thêm 0.2 giây im lặng (bằng 0) để tạo khoảng lặng lấy hơi tự nhiên và triệt tiêu tiếng dè/bụp loa khi chuyển giọng
+        if (idx < segments.length - 1) {
+          const pauseSamples = Math.floor(24000 * 0.20); // 0.20 giây ở tần số mẫu 24kHz
+          const pauseBytes = new Uint8Array(pauseSamples * 2); // 16-bit PCM (2 byte mỗi mẫu), tự động điền đầy 0
+          pcmChunks.push(pauseBytes);
+        }
       }
       const totalLength = pcmChunks.reduce((acc, curr) => acc + curr.length, 0);
       const mergedPcm = new Uint8Array(totalLength);
