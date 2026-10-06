@@ -1,10 +1,10 @@
-
 import React, { useState } from 'react';
-import { Plus, Trash2, Play, Download, Copy, RotateCcw, CheckSquare, Square, Settings2, Loader2, Volume2, Pencil, Save, X } from 'lucide-react';
+import { Plus, Trash2, Play, Download, Copy, RotateCcw, CheckSquare, Square, Settings2, Loader2, Volume2, Pencil, Save, X, Mic } from 'lucide-react';
 import { translate } from '../i18n';
 import { UserProfile } from '../types';
 import { supabase, isSupabaseDisabled } from '../supabaseClient';
 import { generateGeminiText, generateGeminiVoice } from '../services/gemini';
+import { playSilenceWarning, formatVoiceTranscript } from '../utils/voiceFeedback';
 
 interface PromptToVoiceProps {
   outputLanguage: 'EN' | 'VN';
@@ -27,6 +27,225 @@ interface TextBlock {
   selected: boolean;
 }
 
+// ================================================================
+// SUB-COMPONENT 1: PromptBlockItem (Tách biệt để tăng tốc độ gõ phím)
+// ================================================================
+interface PromptBlockItemProps {
+  prompt: PromptBlock;
+  totalPrompts: number;
+  outputLanguage: 'EN' | 'VN';
+  recordingPromptId: string | null;
+  setIsInputFocused: (focused: boolean) => void;
+  updatePrompt: (id: string, text: string) => void;
+  removePrompt: (id: string) => void;
+  toggleSpeechToText: (id: string) => void;
+}
+
+const PromptBlockItem: React.FC<PromptBlockItemProps> = React.memo(({
+  prompt,
+  totalPrompts,
+  outputLanguage,
+  recordingPromptId,
+  setIsInputFocused,
+  updatePrompt,
+  removePrompt,
+  toggleSpeechToText
+}) => {
+  const wordCount = prompt.text.split(/\s+/).filter(Boolean).length;
+  
+  return (
+    <div className="relative group">
+      <textarea
+        onFocus={() => setIsInputFocused(true)}
+        onBlur={() => setIsInputFocused(false)}
+        value={prompt.text}
+        onChange={(e) => updatePrompt(prompt.id, e.target.value)}
+        placeholder={translate('WAITING_COMMAND', outputLanguage)}
+        className="w-full h-64 bg-white border border-slate-200 rounded-2xl p-4 pr-14 text-sm font-medium focus:ring-2 focus:ring-blue-500 outline-none transition shadow-sm resize-none"
+      />
+      <div className="absolute top-4 right-4 flex flex-col gap-2">
+        <button
+          onClick={() => toggleSpeechToText(prompt.id)}
+          className={`p-2.5 rounded-xl border transition shadow-sm active:scale-95 flex items-center justify-center ${
+            recordingPromptId === prompt.id
+              ? 'bg-red-50 border-red-200 text-red-600 animate-pulse'
+              : 'bg-slate-50 border-slate-100 text-slate-500 hover:bg-blue-50 hover:text-blue-600'
+          }`}
+          title={outputLanguage === 'VN' ? 'Nhận diện giọng nói (Micro)' : 'Voice Dictation (Microphone)'}
+        >
+          {recordingPromptId === prompt.id ? (
+            <div className="relative flex items-center justify-center">
+              <span className="animate-ping absolute inline-flex h-3 w-3 rounded-full bg-red-400 opacity-75"></span>
+              <Mic size={16} className="relative text-red-600" />
+            </div>
+          ) : (
+            <Mic size={16} />
+          )}
+        </button>
+      </div>
+      <div className="absolute bottom-4 right-4 flex items-center gap-3">
+        <span className={`text-[10px] font-black uppercase ${wordCount > 5000 ? 'text-red-500' : 'text-slate-400'}`}>
+          {translate('WORD_COUNT', outputLanguage, { count: wordCount })} / 5000
+        </span>
+        {totalPrompts > 1 && (
+          <button 
+            onClick={() => removePrompt(prompt.id)}
+            className="p-2 text-slate-400 hover:text-red-500 transition"
+          >
+            <Trash2 size={16} />
+          </button>
+        )}
+      </div>
+      {prompt.text.length > 4500 && (
+        <p className="mt-1 text-[9px] text-red-500 font-bold uppercase tracking-tighter">
+          {translate('PROMPT_WARNING', outputLanguage)}
+        </p>
+      )}
+    </div>
+  );
+});
+
+// ================================================================
+// SUB-COMPONENT 2: TextBlockItem (Tách biệt để tăng tốc độ soạn thảo kịch bản)
+// ================================================================
+interface TextBlockItemProps {
+  block: TextBlock;
+  outputLanguage: 'EN' | 'VN';
+  targetLang: 'VN' | 'EN';
+  editingBlockId: string | null;
+  editingText: string;
+  setEditingText: (text: string) => void;
+  recordingEditingId: string | null;
+  toggleSelectBlock: (id: string) => void;
+  toggleSpeechToTextEditing: (id: string) => void;
+  saveEditBlock: (id: string) => void;
+  cancelEditBlock: () => void;
+  startEditingBlock: (block: TextBlock) => void;
+  removeGeneratedBlock: (id: string) => void;
+}
+
+const TextBlockItem: React.FC<TextBlockItemProps> = React.memo(({
+  block,
+  outputLanguage,
+  targetLang,
+  editingBlockId,
+  editingText,
+  setEditingText,
+  recordingEditingId,
+  toggleSelectBlock,
+  toggleSpeechToTextEditing,
+  saveEditBlock,
+  cancelEditBlock,
+  startEditingBlock,
+  removeGeneratedBlock
+}) => {
+  const isEditing = editingBlockId === block.id;
+  const wordCount = block.text.replace(/\([^)]*\)/g, '').trim().split(/\s+/).filter(Boolean).length;
+  const min = targetLang === 'VN' ? 31 : (targetLang === 'EN' ? 21 : 24);
+  const max = targetLang === 'VN' ? 31 : (targetLang === 'EN' ? 21 : 24);
+  const isExactLength = wordCount >= min && wordCount <= max;
+
+  return (
+    <div 
+      className={`p-4 rounded-2xl border transition-all relative group cursor-pointer ${block.selected ? 'bg-indigo-50/50 border-indigo-200 shadow-sm' : 'bg-white border-slate-100 opacity-60'}`}
+      onClick={() => !isEditing && toggleSelectBlock(block.id)}
+    >
+      <div className="absolute top-2 right-2 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+        {isEditing ? (
+          <>
+            <button 
+              onClick={(e) => {
+                e.stopPropagation();
+                saveEditBlock(block.id);
+              }}
+              className="p-1.5 text-emerald-600 hover:bg-emerald-50 rounded-lg transition"
+            >
+              <Save size={14} />
+            </button>
+            <button 
+              onClick={(e) => {
+                e.stopPropagation();
+                cancelEditBlock();
+              }}
+              className="p-1.5 text-slate-400 hover:bg-slate-50 rounded-lg transition"
+            >
+              <X size={14} />
+            </button>
+          </>
+        ) : (
+          <>
+            <button 
+              onClick={(e) => {
+                e.stopPropagation();
+                startEditingBlock(block);
+              }}
+              className="p-1.5 text-indigo-400 hover:text-indigo-600 transition"
+            >
+              <Pencil size={14} />
+            </button>
+            <button 
+              onClick={(e) => {
+                e.stopPropagation();
+                removeGeneratedBlock(block.id);
+              }}
+              className="p-1.5 text-slate-300 hover:text-red-500 transition"
+            >
+              <Trash2 size={14} />
+            </button>
+          </>
+        )}
+      </div>
+      <div className="flex items-start gap-3">
+        <div className="mt-1">
+          {block.selected ? <CheckSquare size={16} className="text-indigo-600" /> : <Square size={16} className="text-slate-300" />}
+        </div>
+        {isEditing ? (
+          <div className="relative flex-1">
+            <textarea
+              value={editingText}
+              onChange={(e) => setEditingText(e.target.value)}
+              className="w-full bg-white border border-blue-200 rounded-xl p-2 pr-12 text-sm font-medium focus:ring-2 focus:ring-blue-500 outline-none min-h-[80px] resize-none"
+              autoFocus
+              onClick={(e) => e.stopPropagation()}
+            />
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                toggleSpeechToTextEditing(block.id);
+              }}
+              className={`absolute top-2 right-2 p-1.5 rounded-lg border transition shadow-sm active:scale-95 flex items-center justify-center ${
+                recordingEditingId === block.id
+                  ? 'bg-red-50 border-red-200 text-red-600 animate-pulse'
+                  : 'bg-slate-50 border-slate-100 text-slate-400 hover:text-blue-600 hover:bg-blue-50'
+              }`}
+              title="Đọc văn bản chỉnh sửa (Micro)"
+            >
+              {recordingEditingId === block.id ? (
+                <div className="relative flex items-center justify-center">
+                  <span className="animate-ping absolute inline-flex h-2.5 w-2.5 rounded-full bg-red-400 opacity-75"></span>
+                  <Mic size={12} className="relative text-red-600" />
+                </div>
+              ) : (
+                <Mic size={12} />
+              )}
+            </button>
+          </div>
+        ) : (
+          <p className="text-sm font-medium text-slate-700 leading-relaxed whitespace-pre-wrap">{block.text}</p>
+        )}
+      </div>
+      <div className="mt-2 flex justify-end">
+        <span className={`text-[10px] font-serif font-black uppercase ${isExactLength ? 'text-emerald-500 font-bold' : 'text-slate-400'}`}>
+          {translate('WORD_COUNT', outputLanguage, { count: wordCount })}
+        </span>
+      </div>
+    </div>
+  );
+});
+
+// ================================================================
+// MAIN COMPONENT: PromptToVoice
+// ================================================================
 export const PromptToVoice: React.FC<PromptToVoiceProps> = ({ outputLanguage, profile, useProjectKey, deductCredit, credit, userPlan, apiKeys }) => {
   const [prompts, setPrompts] = useState<PromptBlock[]>([{ id: '1', text: '' }]);
   const [generatedTextBlocks, setGeneratedTextBlocks] = useState<TextBlock[]>([]);
@@ -71,7 +290,6 @@ export const PromptToVoice: React.FC<PromptToVoiceProps> = ({ outputLanguage, pr
     if (audioUrl && audioRef.current) {
       const playAudio = async () => {
         try {
-          // Small delay to ensure browser is ready after blob URL creation
           await new Promise(resolve => setTimeout(resolve, 100));
           if (audioRef.current) {
             audioRef.current.load();
@@ -96,8 +314,240 @@ export const PromptToVoice: React.FC<PromptToVoiceProps> = ({ outputLanguage, pr
   const [voiceGender, setVoiceGender] = useState<'MALE' | 'FEMALE'>('FEMALE');
   const [voiceStyle, setVoiceStyle] = useState('STYLE_NATURAL');
   const [voiceQuality, setVoiceQuality] = useState('QUALITY_YOUTHFUL');
+
   const [showVoiceSettings, setShowVoiceSettings] = useState(false);
+  const [showVoiceGuide, setShowVoiceGuide] = useState(false);
   const [showErrorHint, setShowErrorHint] = useState(false);
+
+  const [recordingPromptId, setRecordingPromptId] = useState<string | null>(null);
+  const recognitionRef = React.useRef<any>(null);
+  const silenceTimeoutRef = React.useRef<any>(null);
+
+  // Clean up recording listeners on unmount
+  React.useEffect(() => {
+    return () => {
+      if (silenceTimeoutRef.current) {
+        clearTimeout(silenceTimeoutRef.current);
+      }
+      if (recognitionRef.current) {
+        try {
+          recognitionRef.current.stop();
+        } catch (e) {
+          console.warn("Unmount cleanup failed:", e);
+        }
+      }
+    };
+  }, []);
+
+  const stopRecording = (speakWarning: boolean = false) => {
+    if (silenceTimeoutRef.current) {
+      clearTimeout(silenceTimeoutRef.current);
+      silenceTimeoutRef.current = null;
+    }
+    
+    if (recognitionRef.current) {
+      try {
+        recognitionRef.current.stop();
+      } catch (e) {
+        console.warn(e);
+      }
+      recognitionRef.current = null;
+    }
+    
+    setRecordingPromptId(null);
+
+    if (speakWarning) {
+      playSilenceWarning(outputLanguage);
+    }
+  };
+
+  const toggleSpeechToText = (promptId: string) => {
+    if (recordingPromptId === promptId) {
+      stopRecording(false);
+      return;
+    }
+
+    if (recordingPromptId) {
+      stopRecording(false);
+    }
+
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      alert(outputLanguage === 'VN' 
+        ? "Trình duyệt của bạn không hỗ trợ nhận diện giọng nói. Hãy dùng Chrome hoặc Safari." 
+        : "Your browser does not support Speech Recognition. Please use Chrome or Safari.");
+      return;
+    }
+
+    try {
+      const recognition = new SpeechRecognition();
+      recognition.lang = voiceLang;
+      recognition.continuous = true;
+      recognition.interimResults = false;
+
+      recognition.onstart = () => {
+        setRecordingPromptId(promptId);
+        
+        if (silenceTimeoutRef.current) clearTimeout(silenceTimeoutRef.current);
+        silenceTimeoutRef.current = setTimeout(() => {
+          stopRecording(true);
+        }, 7000); // 7 seconds of absolute silence timeout
+      };
+
+      recognition.onresult = (event: any) => {
+        if (silenceTimeoutRef.current) clearTimeout(silenceTimeoutRef.current);
+        silenceTimeoutRef.current = setTimeout(() => {
+          stopRecording(true);
+        }, 7000);
+
+        const lastResultIndex = event.results.length - 1;
+        const transcript = event.results[lastResultIndex][0].transcript || '';
+        
+        if (transcript.trim()) {
+          const formattedText = formatVoiceTranscript(transcript);
+
+          setPrompts(prevPrompts => 
+            prevPrompts.map(p => {
+              if (p.id === promptId) {
+                const currentText = p.text.trim();
+                const separator = currentText ? '\n' : '';
+                return { ...p, text: currentText + separator + formattedText };
+              }
+              return p;
+            })
+          );
+        }
+      };
+
+      recognition.onerror = (event: any) => {
+        console.error("Speech recognition error:", event.error);
+        if (event.error === 'no-speech') {
+          stopRecording(true);
+        } else {
+          stopRecording(false);
+        }
+      };
+
+      recognition.onend = () => {
+        setRecordingPromptId(null);
+        if (silenceTimeoutRef.current) {
+          clearTimeout(silenceTimeoutRef.current);
+          silenceTimeoutRef.current = null;
+        }
+      };
+
+      recognitionRef.current = recognition;
+      recognition.start();
+    } catch (err) {
+      console.error("Failed to start Speech Recognition:", err);
+      setRecordingPromptId(null);
+    }
+  };
+
+  const [recordingEditingId, setRecordingEditingId] = useState<string | null>(null);
+
+  const stopRecordingEditing = (speakWarning: boolean = false) => {
+    if (silenceTimeoutRef.current) {
+      clearTimeout(silenceTimeoutRef.current);
+      silenceTimeoutRef.current = null;
+    }
+    
+    if (recognitionRef.current) {
+      try {
+        recognitionRef.current.stop();
+      } catch (e) {
+        console.warn(e);
+      }
+      recognitionRef.current = null;
+    }
+    
+    setRecordingEditingId(null);
+
+    if (speakWarning) {
+      playSilenceWarning(outputLanguage);
+    }
+  };
+
+  const toggleSpeechToTextEditing = (blockId: string) => {
+    if (recordingEditingId === blockId) {
+      stopRecordingEditing(false);
+      return;
+    }
+
+    if (recordingEditingId) {
+      stopRecordingEditing(false);
+    }
+    if (recordingPromptId) {
+      stopRecording(false);
+    }
+
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      alert(outputLanguage === 'VN' 
+        ? "Trình duyệt của bạn không hỗ trợ nhận diện giọng nói. Hãy dùng Chrome hoặc Safari." 
+        : "Your browser does not support Speech Recognition. Please use Chrome or Safari.");
+      return;
+    }
+
+    try {
+      const recognition = new SpeechRecognition();
+      recognition.lang = voiceLang;
+      recognition.continuous = true;
+      recognition.interimResults = false;
+
+      recognition.onstart = () => {
+        setRecordingEditingId(blockId);
+        
+        if (silenceTimeoutRef.current) clearTimeout(silenceTimeoutRef.current);
+        silenceTimeoutRef.current = setTimeout(() => {
+          stopRecordingEditing(true);
+        }, 7000); // 7 seconds timeout
+      };
+
+      recognition.onresult = (event: any) => {
+        if (silenceTimeoutRef.current) clearTimeout(silenceTimeoutRef.current);
+        silenceTimeoutRef.current = setTimeout(() => {
+          stopRecordingEditing(true);
+        }, 7000);
+
+        const lastResultIndex = event.results.length - 1;
+        const transcript = event.results[lastResultIndex][0].transcript || '';
+        
+        if (transcript.trim()) {
+          const formattedText = formatVoiceTranscript(transcript);
+
+          setEditingText(prev => {
+            const currentText = prev.trim();
+            const separator = currentText ? ' ' : '';
+            return currentText + separator + formattedText;
+          });
+        }
+      };
+
+      recognition.onerror = (event: any) => {
+        console.error("Speech recognition error:", event.error);
+        if (event.error === 'no-speech') {
+          stopRecordingEditing(true);
+        } else {
+          stopRecordingEditing(false);
+        }
+      };
+
+      recognition.onend = () => {
+        setRecordingEditingId(null);
+        if (silenceTimeoutRef.current) {
+          clearTimeout(silenceTimeoutRef.current);
+          silenceTimeoutRef.current = null;
+        }
+      };
+
+      recognitionRef.current = recognition;
+      recognition.start();
+    } catch (err) {
+      console.error("Failed to start Speech Recognition:", err);
+      setRecordingEditingId(null);
+    }
+  };
 
   const addPrompt = () => {
     setPrompts([...prompts, { id: Date.now().toString(), text: '' }]);
@@ -142,7 +592,6 @@ export const PromptToVoice: React.FC<PromptToVoiceProps> = ({ outputLanguage, pr
   };
 
   const generateText = async () => {
-    // Gather all text from prompts and split into lines
     const allLines = prompts
       .map(p => p.text.trim())
       .filter(Boolean)
@@ -153,19 +602,19 @@ export const PromptToVoice: React.FC<PromptToVoiceProps> = ({ outputLanguage, pr
 
     if (allLines.length === 0) return;
     
-    // Experience Limits for Free users
+    // Giới hạn dùng thử
     const cleanEmail = profile.email?.trim().toLowerCase();
     if (userPlan === 'free' && !profile.isAdmin) {
       const usageKey = `veopro_usage_${cleanEmail}_${new Date().toISOString().split('T')[0]}`;
       const dailyUsage = Number(localStorage.getItem(usageKey) || 0);
-      if (dailyUsage >= 10) { // Limit text to 10
+      if (dailyUsage >= 10) {
         alert(`Giới hạn dùng thử hàng ngày đã hết. Vui lòng nâng cấp gói Pro để tiếp tục.\n\nDaily limit reached. Please upgrade to Pro.`);
         return;
       }
       localStorage.setItem(usageKey, (dailyUsage + 1).toString());
     }
 
-    // Check credit before starting
+    // Kiểm tra xu trước khi sinh văn bản
     const isPro = (userPlan === 'pro' || userPlan === 'pro1' || profile.isAdmin);
     if (!isPro && credit < 1 && !profile.isAdmin) {
       alert(translate('UPGRADE_PRO_MESSAGE', outputLanguage));
@@ -177,7 +626,6 @@ export const PromptToVoice: React.FC<PromptToVoiceProps> = ({ outputLanguage, pr
     setGeneratedTextBlocks([]);
     
     try {
-      // Deduct credit for text
       const success = await deductCredit(1, 'TEXT');
       if (!success) {
         setIsGeneratingText(false);
@@ -185,7 +633,6 @@ export const PromptToVoice: React.FC<PromptToVoiceProps> = ({ outputLanguage, pr
       }
 
       const isAdminFlag = profile.isAdmin;
-      
       let finalApiKeys = apiKeys;
       let finalUseProjectKey = useProjectKey;
 
@@ -203,45 +650,39 @@ export const PromptToVoice: React.FC<PromptToVoiceProps> = ({ outputLanguage, pr
       }
 
       const newBlocks: TextBlock[] = [];
-      
-      // Target length in words for ~8 seconds (7.8s aim)
-      const targetMin = targetLang === 'VN' ? 27 : 32;
-      const targetMax = targetLang === 'VN' ? 31 : 36;
+      const targetMax = targetLang === 'VN' ? 31 : (targetLang === 'EN' ? 21 : 24);
       const targetLangName = targetLang === 'VN' ? 'Tiếng Việt' : 'English';
       
       const systemInstruction = targetLang === 'VN' ? 
         `Bạn là một chuyên gia biên tập kịch bản video ngắn (8 giây).
         Nhiệm vụ: Chuyển đổi lời nhắc (prompt) thành văn bản đọc thoại (voiceover) hấp dẫn bằng ${targetLangName}.
         
-        QUY TẮC CỐ ĐỊNH:
-        1. Mỗi văn bản bạn tạo ra phải khớp với thời lượng 7.8 - 8.0 giây.
-        2. Độ dài bắt buộc: Từ ${targetMin} đến ${targetMax} từ (${targetLangName}). KHÔNG ĐƯỢC ÍT HƠN HOẶC NHIỀU HƠN.
-        3. Nếu trong lời nhắc có văn bản nằm trong ngoặc kép "", hãy sử dụng nội dùng đó làm trung tâm và mở rộng thêm mô tả bối cảnh hoặc cảm xúc để đạt đủ số từ yêu cầu.
+        QUY TẮC BẮT BUỘC TUYỆT ĐỐI:
+        1. Mỗi câu thoại bạn tạo ra phải có độ dài CHÍNH XÁC ĐÚNG 31 từ (không ít hơn, không nhiều hơn). Bạn BẮT BUỘC phải tự đếm thật kỹ số từ để đúng 31 từ trước khi trả về kết quả.
+        2. Mỗi câu thoại phải được diễn đạt súc tích, nhịp điệu vừa phải để khi đọc thoại chuẩn đạt thời lượng tối thiểu 7.0 đến 8.0 giây.
+        3. Nếu trong lời nhắc có văn bản nằm trong ngoặc kép "", hãy sử dụng nội dung đó làm trung tâm và mở rộng thêm mô tả bối cảnh hoặc cảm xúc để đạt đúng 31 từ yêu cầu.
         4. Văn phong: Điện ảnh, giàu cảm xúc, tự nhiên cho giọng đọc AI.
-        5. Loại bỏ các thuật ngữ kỹ thuật quay phim (góc máy, cú cắt...).
-        6. Thêm hướng dẫn nhạc nền/không khí trong ngoặc đơn ( ) ở ĐẦU đoạn văn (Ví dụ: (Nhạc nền kịch tính khởi đầu)).
-        7. Chỉ trả về duy nhất đoạn văn bản kịch bản, không kèm lời dẫn hay giải thích.
-        8. Toàn bộ nội dung phải là ${targetLangName}.` :
+        5. Loại bỏ hoàn toàn các thuật ngữ kỹ thuật quay phim (góc máy, cú cắt...).
+        6. Thêm hướng dẫn nhạc nền/không khí trong ngoặc đơn ( ) ở ĐẦU đoạn văn (Ví dụ: (Nhạc nền kịch tính khởi đầu)). Ký tự trong ngoặc đơn này không tính vào giới hạn 31 từ thoại.
+        7. Chỉ trả về duy nhất đoạn văn bản thoại kịch bản, không kèm lời dẫn hay giải thích.` :
         
         `You are a professional short-video script editor (8 seconds).
-        Task: Convert the prompt into a compelling voiceover text in ${targetLangName}.
+        Task: Convert the prompt into a compelling voiceover text.
         
-        STRICT RULES:
-        1. Each segment must fit a duration of 7.8 - 8.0 seconds.
-        2. Mandatory Length: Exactly ${targetMin} to ${targetMax} words. NO MORE, NO LESS.
-        3. If the prompt contains text in double quotes "", use that content as the core and expand with descriptive atmosphere or emotion to reach the word count.
+        STRICT MANDATORY RULES:
+        1. Each segment must have a duration of 7.0 to 8.0 seconds of natural speech.
+        2. Mandatory Length: EXACTLY ${targetMax} words (no more, no less). You must count the words carefully to ensure it is exactly ${targetMax} words.
+        3. If the prompt contains text in double quotes "", use that content as the core and expand with descriptive atmosphere or emotion to reach the exact word count of ${targetMax} words.
         4. Style: Cinematic, emotional, and natural for AI voices.
         5. Remove all filmmaking technical terms (camera angles, cuts, etc.).
-        6. Add background music/atmosphere instructions in parentheses ( ) at the START of the paragraph (e.g., (Mysterious ambient music begins)).
-        7. Return ONLY the script content, no introductions or explanations.
-        8. The entire content must be in ${targetLangName}.`;
+        6. Add background music/atmosphere instructions in parentheses ( ) at the START of the paragraph (e.g., (Mysterious ambient music begins)). Parentheses contents are not counted in the word limit.
+        7. Return ONLY the script content, no introductions or explanations.`;
 
-      // Process each line individually
+      // Tạo kịch bản cho từng dòng nhập vào
       for (let i = 0; i < allLines.length; i++) {
         const line = allLines[i];
-        
-        const success = await deductCredit(1);
-        if (!success) break;
+        const successLine = await deductCredit(1);
+        if (!successLine) break;
 
         const text = await generateGeminiText(line, systemInstruction, finalApiKeys, targetLang, finalUseProjectKey);
         newBlocks.push({
@@ -249,8 +690,6 @@ export const PromptToVoice: React.FC<PromptToVoiceProps> = ({ outputLanguage, pr
           text: text,
           selected: true
         });
-        
-        // Update progress
         setProgress((i + 1) / allLines.length * 100);
       }
       
@@ -258,7 +697,6 @@ export const PromptToVoice: React.FC<PromptToVoiceProps> = ({ outputLanguage, pr
     } catch (error: any) {
       console.error("Text generation error:", error);
       const errorMsg = error.message || String(error);
-      
       if (errorMsg.includes('401') || errorMsg.includes('403') || errorMsg.includes('PERMISSION_DENIED') || errorMsg.includes('API key not valid') || error.isKeyError) {
         alert(translate('API_AUTH_ERROR', outputLanguage));
         if (window.aistudio?.openSelectKey) {
@@ -284,19 +722,19 @@ export const PromptToVoice: React.FC<PromptToVoiceProps> = ({ outputLanguage, pr
     
     if (!selectedText) return;
 
-    // Experience Limits for Free users
+    // Giới hạn dùng thử thoại cho free user
     const cleanEmail = profile.email?.trim().toLowerCase();
     if (userPlan === 'free' && !profile.isAdmin) {
       const usageKey = `veopro_usage_${cleanEmail}_${new Date().toISOString().split('T')[0]}_voice`;
       const dailyUsage = Number(localStorage.getItem(usageKey) || 0);
-      if (dailyUsage >= 5) { // Limit voice to 5
+      if (dailyUsage >= 5) {
         alert(`Giới hạn dùng thử giọng đọc đã hết. Vui lòng nâng cấp gói Pro.\n\nDaily voice limit reached.`);
         return;
       }
       localStorage.setItem(usageKey, (dailyUsage + 1).toString());
     }
 
-    // Check credit before starting
+    // Kiểm tra xu
     const isProPlan = (userPlan === 'pro' || userPlan === 'pro1' || profile.isAdmin);
     if (!isProPlan && credit < 1 && !profile.isAdmin) {
       alert(translate('UPGRADE_PRO_MESSAGE', outputLanguage) + "\n\n(Cần: 1 xu)");
@@ -309,14 +747,12 @@ export const PromptToVoice: React.FC<PromptToVoiceProps> = ({ outputLanguage, pr
     setShowErrorHint(false);
 
     try {
-      // Deduct credit for voice (constant 1)
       const success = await deductCredit(1, 'VOICE');
       if (!success) {
         setIsGeneratingVoice(false);
         return;
       }
 
-      // Plan check and logic for Pro users
       const isPro = (userPlan === 'pro' || userPlan === 'pro1' || profile.isAdmin);
       const isAdminFlagVoice = profile.isAdmin;
       
@@ -336,11 +772,7 @@ export const PromptToVoice: React.FC<PromptToVoiceProps> = ({ outputLanguage, pr
         voiceApiKeys = apiKeys;
       }
 
-      // Combine all selected text blocks into one request for efficiency and better key rotation
       const selectedBlocks = generatedTextBlocks.filter(b => b.selected);
-      
-      // Clean text: remove cinematic cues in parentheses but KEEP square brackets for gender switching
-      // Combine with double newlines for natural pauses between blocks
       const combinedText = selectedBlocks
         .map(b => b.text.replace(/\([^)]*\)/g, '').trim())
         .filter(Boolean)
@@ -369,25 +801,22 @@ export const PromptToVoice: React.FC<PromptToVoiceProps> = ({ outputLanguage, pr
       setStatusMessage(translate('STATUS_MERGING', outputLanguage));
       setProgress(90);
 
-      // We have the combined audio as a single base64 string
       const binaryString = atob(base64Audio);
       const mergedPcm = new Uint8Array(binaryString.length);
       for (let i = 0; i < binaryString.length; i++) {
         mergedPcm[i] = binaryString.charCodeAt(i);
       }
 
-      // Add WAV header (Gemini TTS returns 24kHz mono PCM)
       const wavData = addWavHeader(mergedPcm, 24000);
       const combinedBlob = new Blob([wavData], { type: 'audio/wav' });
       const url = URL.createObjectURL(combinedBlob);
       setAudioUrl(url);
       
-      // Save to Supabase if not disabled
       if (!isSupabaseDisabled) {
         await supabase.from('voice_generations').insert([{
           user_email: profile.email,
-          text: combinedText.substring(0, 1000), // Save snippet
-          audio_url: url, // In production, this would be a permanent storage URL
+          text: combinedText.substring(0, 1000),
+          audio_url: url,
           created_at: new Date().toISOString()
         }]);
       }
@@ -419,31 +848,18 @@ export const PromptToVoice: React.FC<PromptToVoiceProps> = ({ outputLanguage, pr
     const header = new ArrayBuffer(44);
     const view = new DataView(header);
 
-    // RIFF identifier
     view.setUint32(0, 0x52494646, false); // "RIFF"
-    // file length
     view.setUint32(4, 36 + pcmData.length, true);
-    // RIFF type
     view.setUint32(8, 0x57415645, false); // "WAVE"
-    // format chunk identifier
     view.setUint32(12, 0x666d7420, false); // "fmt "
-    // format chunk length
     view.setUint32(16, 16, true);
-    // sample format (1 = PCM)
     view.setUint16(20, 1, true);
-    // channel count (1 = mono)
     view.setUint16(22, 1, true);
-    // sample rate
     view.setUint32(24, sampleRate, true);
-    // byte rate (sample rate * block align)
     view.setUint32(28, sampleRate * 2, true);
-    // block align (channel count * bytes per sample)
     view.setUint16(32, 2, true);
-    // bits per sample
     view.setUint16(34, 16, true);
-    // data chunk identifier
     view.setUint32(36, 0x64617461, false); // "data"
-    // data chunk length
     view.setUint32(40, pcmData.length, true);
 
     const wav = new Uint8Array(header.byteLength + pcmData.length);
@@ -454,7 +870,7 @@ export const PromptToVoice: React.FC<PromptToVoiceProps> = ({ outputLanguage, pr
 
   return (
     <div className="flex-1 flex flex-col bg-slate-50 overflow-hidden relative">
-       {/* Orientation Suggestion for Mobile */}
+       {/* Hướng xoay màn hình điện thoại */}
        {isPortrait && typeof window !== 'undefined' && window.innerWidth < 768 && (
         <div className="fixed inset-0 bg-indigo-900/90 z-[1000] flex flex-col items-center justify-center p-6 text-center text-white pointer-events-none md:hidden">
           <div className="w-16 h-12 border-2 border-white rounded-lg mb-4 animate-bounce flex items-center justify-center">
@@ -466,11 +882,10 @@ export const PromptToVoice: React.FC<PromptToVoiceProps> = ({ outputLanguage, pr
             <button onClick={() => setIsPortrait(false)} className="px-6 py-2 bg-white text-indigo-900 rounded-full text-[10px] font-black uppercase">{translate('CONTINUE_ANYWAY', outputLanguage) || (outputLanguage === 'VN' ? 'TIẾP TỤC BỎ QUA' : 'CONTINUE ANYWAY')}</button>
           </div>
         </div>
-      )}
+       )}
 
-      {/* Header with Plan Info */}
+      {/* Header */}
       <div className={`px-6 py-4 bg-white border-b border-slate-100 flex items-center justify-between ${isInputFocused ? 'hidden md:flex' : 'flex'}`}>
-
         <div className="flex flex-col">
           <h2 className="text-xl font-black text-slate-800 tracking-tighter uppercase leading-none">
             {translate('PROMPT_TO_VOICE', outputLanguage)}
@@ -486,7 +901,7 @@ export const PromptToVoice: React.FC<PromptToVoiceProps> = ({ outputLanguage, pr
       </div>
 
       <div className="flex-1 flex overflow-hidden p-6 gap-6">
-        {/* Left Column: Prompts */}
+        {/* Cột trái: Soạn Lời Nhắc / Prompts */}
         <div className="w-1/2 flex flex-col gap-4 overflow-y-auto pr-2 custom-scrollbar">
           <div className={`flex items-center justify-between mb-2 ${isInputFocused ? 'hidden md:flex' : 'flex'}`}>
             <h3 className="text-sm font-black text-slate-800 uppercase tracking-widest flex items-center gap-2">
@@ -502,46 +917,73 @@ export const PromptToVoice: React.FC<PromptToVoiceProps> = ({ outputLanguage, pr
             </button>
           </div>
 
-          <p className={`text-[10px] text-slate-500 font-bold italic mb-2 px-1 ${isInputFocused ? 'hidden md:block' : 'block'}`}>
-            {translate('PROMPT_HINT', outputLanguage)}
-            <span className="ml-2 text-blue-600 block sm:inline mt-1 sm:mt-0">
-              {outputLanguage === 'VN' ? 'Mẹo: Dùng [Giọng Nam] hoặc [Giọng Nữ] để chuyển đổi giọng đọc trong văn bản.' : 'Tip: Use [Giọng Nam] or [Giọng Nữ] to switch voices within the text.'}
-            </span>
-          </p>
+          {/* Hướng dẫn khẩu lệnh & Thẻ chuyển giọng: Gọn 1 dòng tinh tế, bấm mở/đóng, tự động thu gọn tránh rối mắt */}
+          <div className={`border border-blue-100 rounded-2xl bg-gradient-to-r from-blue-50/70 to-indigo-50/70 overflow-hidden transition-all shadow-xs ${isInputFocused ? 'hidden md:block' : 'block'}`}>
+            <button
+              type="button"
+              onClick={() => setShowVoiceGuide(!showVoiceGuide)}
+              className="w-full px-3.5 py-2 flex items-center justify-between text-left text-blue-900 hover:bg-blue-100/40 transition cursor-pointer"
+            >
+              <div className="flex items-center gap-2 text-[11px] font-bold">
+                <span className="text-sm">💡</span>
+                <span className="truncate">
+                  {outputLanguage === 'VN' 
+                    ? 'Mẹo Micro: Nói "đây là giọng nam/nữ" tự điền thẻ [Giọng Nam]/[Giọng Nữ]' 
+                    : 'Mic Tip: Say "voice male/female" to insert tags [Giọng Nam]/[Giọng Nữ]'}
+                </span>
+              </div>
+              <div className="flex items-center gap-1.5 text-[9.5px] font-bold text-blue-700 bg-white/90 px-2 py-0.5 rounded-lg border border-blue-200/80 shrink-0">
+                <span>{showVoiceGuide ? (outputLanguage === 'VN' ? 'Đóng lại' : 'Hide') : (outputLanguage === 'VN' ? 'Xem chi tiết' : 'View tips')}</span>
+                <span className="text-[8px]">{showVoiceGuide ? '▲' : '▼'}</span>
+              </div>
+            </button>
+
+            {showVoiceGuide && (
+              <div className="p-3.5 border-t border-blue-100/70 text-[11px] text-slate-700 space-y-2.5 bg-white/70 animate-in slide-in-from-top-1 duration-150">
+                <div className="space-y-1">
+                  <p className="font-bold text-blue-950 text-[10px] uppercase tracking-wider flex items-center gap-1.5">
+                    🎙️ CÁC CÂU LỆNH NÓI VÀO MICRO TỰ ĐỘNG CHUYỂN THÀNH THẺ:
+                  </p>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[10px]">
+                    <div className="bg-white p-2.5 rounded-xl border border-slate-100 shadow-2xs space-y-1">
+                      <span className="text-slate-500 font-medium">Khi bạn nói một trong các câu:</span>
+                      <p className="font-mono text-blue-700 font-bold bg-blue-50/60 p-1 rounded">"đây là giọng nam" / "thêm giọng nam" / "đóng vai giọng nam" / "giọng nam"</p>
+                      <p className="text-emerald-700 font-bold text-[9.5px]">➔ Tự động chèn thẻ: <span className="bg-blue-100 text-blue-800 px-1 py-0.5 rounded">[Giọng Nam]</span></p>
+                    </div>
+                    <div className="bg-white p-2.5 rounded-xl border border-slate-100 shadow-2xs space-y-1">
+                      <span className="text-slate-500 font-medium">Khi bạn nói một trong các câu:</span>
+                      <p className="font-mono text-pink-700 font-bold bg-pink-50/60 p-1 rounded">"đây là giọng nữ" / "thêm giọng nữ" / "đóng vai giọng nữ" / "giọng nữ"</p>
+                      <p className="text-emerald-700 font-bold text-[9.5px]">➔ Tự động chèn thẻ: <span className="bg-pink-100 text-pink-800 px-1 py-0.5 rounded">[Giọng Nữ]</span></p>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="pt-1.5 border-t border-blue-100/60">
+                  <p className="text-[10px] text-slate-600">
+                    <span className="font-bold text-slate-800">Cấu trúc mẫu 2 giọng liền mạch: </span>
+                    <code className="bg-white px-1.5 py-0.5 rounded border border-slate-200 text-slate-800 font-mono text-[9.5px]">[Giọng Nam] Chào bạn! [Giọng Nữ] Hôm nay chúng ta cùng bắt đầu...</code>
+                  </p>
+                </div>
+              </div>
+            )}
+          </div>
 
           {prompts.map((prompt) => (
-            <div key={prompt.id} className="relative group">
-              <textarea
-                onFocus={() => setIsInputFocused(true)}
-                onBlur={() => setIsInputFocused(false)}
-                value={prompt.text}
-                onChange={(e) => updatePrompt(prompt.id, e.target.value)}
-                placeholder={translate('WAITING_COMMAND', outputLanguage)}
-                className="w-full h-64 bg-white border border-slate-200 rounded-2xl p-4 text-sm font-medium focus:ring-2 focus:ring-blue-500 outline-none transition shadow-sm resize-none"
-              />
-              <div className="absolute bottom-4 right-4 flex items-center gap-3">
-                <span className={`text-[10px] font-black uppercase ${prompt.text.split(/\s+/).filter(Boolean).length > 5000 ? 'text-red-500' : 'text-slate-400'}`}>
-                  {translate('WORD_COUNT', outputLanguage, { count: prompt.text.split(/\s+/).filter(Boolean).length })} / 5000
-                </span>
-                {prompts.length > 1 && (
-                  <button 
-                    onClick={() => removePrompt(prompt.id)}
-                    className="p-2 text-slate-400 hover:text-red-500 transition"
-                  >
-                    <Trash2 size={16} />
-                  </button>
-                )}
-              </div>
-              {prompt.text.length > 4500 && (
-                <p className="mt-1 text-[9px] text-red-500 font-bold uppercase tracking-tighter">
-                  {translate('PROMPT_WARNING', outputLanguage)}
-                </p>
-              )}
-            </div>
+            <PromptBlockItem
+              key={prompt.id}
+              prompt={prompt}
+              totalPrompts={prompts.length}
+              outputLanguage={outputLanguage}
+              recordingPromptId={recordingPromptId}
+              setIsInputFocused={setIsInputFocused}
+              updatePrompt={updatePrompt}
+              removePrompt={removePrompt}
+              toggleSpeechToText={toggleSpeechToText}
+            />
           ))}
         </div>
 
-        {/* Right Column: Generated Text & Voice */}
+        {/* Cột phải: Kịch bản Đọc thoại & Cài đặt Giọng đọc */}
         <div className="w-1/2 flex flex-col gap-4 overflow-hidden">
           <div className={`flex items-center justify-between mb-2 ${isInputFocused ? 'hidden md:flex' : 'flex'}`}>
             <div className="flex items-center gap-3">
@@ -639,90 +1081,27 @@ export const PromptToVoice: React.FC<PromptToVoiceProps> = ({ outputLanguage, pr
                 </div>
               )}
               {generatedTextBlocks.map((block) => (
-                <div 
-                  key={block.id} 
-                  className={`p-4 rounded-2xl border transition-all relative group cursor-pointer ${block.selected ? 'bg-indigo-50/50 border-indigo-200 shadow-sm' : 'bg-white border-slate-100 opacity-60'}`}
-                  onClick={() => (!editingBlockId || editingBlockId !== block.id) && toggleSelectBlock(block.id)}
-                >
-                  <div className="absolute top-2 right-2 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                    {editingBlockId === block.id ? (
-                      <>
-                        <button 
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            saveEditBlock(block.id);
-                          }}
-                          className="p-1.5 text-emerald-600 hover:bg-emerald-50 rounded-lg transition"
-                        >
-                          <Save size={14} />
-                        </button>
-                        <button 
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            cancelEditBlock();
-                          }}
-                          className="p-1.5 text-slate-400 hover:bg-slate-50 rounded-lg transition"
-                        >
-                          <X size={14} />
-                        </button>
-                      </>
-                    ) : (
-                      <>
-                        <button 
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            startEditingBlock(block);
-                          }}
-                          className="p-1.5 text-indigo-400 hover:text-indigo-600 transition"
-                        >
-                          <Pencil size={14} />
-                        </button>
-                        <button 
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            removeGeneratedBlock(block.id);
-                          }}
-                          className="p-1.5 text-slate-300 hover:text-red-500 transition"
-                        >
-                          <Trash2 size={14} />
-                        </button>
-                      </>
-                    )}
-                  </div>
-                  <div className="flex items-start gap-3">
-                    <div className="mt-1">
-                      {block.selected ? <CheckSquare size={16} className="text-indigo-600" /> : <Square size={16} className="text-slate-300" />}
-                    </div>
-                    {editingBlockId === block.id ? (
-                      <textarea
-                        value={editingText}
-                        onChange={(e) => setEditingText(e.target.value)}
-                        className="flex-1 bg-white border border-blue-200 rounded-xl p-2 text-sm font-medium focus:ring-2 focus:ring-blue-500 outline-none min-h-[80px] resize-none"
-                        autoFocus
-                        onClick={(e) => e.stopPropagation()}
-                      />
-                    ) : (
-                      <p className="text-sm font-medium text-slate-700 leading-relaxed whitespace-pre-wrap">{block.text}</p>
-                    )}
-                  </div>
-                  <div className="mt-2 flex justify-end">
-                    <span className={`text-[10px] font-serif font-black uppercase ${
-                      (() => {
-                        const count = block.text.split(/\s+/).filter(Boolean).length;
-                        const min = targetLang === 'VN' ? 27 : 32;
-                        const max = targetLang === 'VN' ? 31 : 36;
-                        return (count >= min && count <= max) ? 'text-emerald-500' : 'text-slate-400';
-                      })()
-                    }`}>
-                      {translate('WORD_COUNT', outputLanguage, { count: block.text.split(/\s+/).filter(Boolean).length })}
-                    </span>
-                  </div>
-                </div>
+                <TextBlockItem
+                  key={block.id}
+                  block={block}
+                  outputLanguage={outputLanguage}
+                  targetLang={targetLang}
+                  editingBlockId={editingBlockId}
+                  editingText={editingText}
+                  setEditingText={setEditingText}
+                  recordingEditingId={recordingEditingId}
+                  toggleSelectBlock={toggleSelectBlock}
+                  toggleSpeechToTextEditing={toggleSpeechToTextEditing}
+                  saveEditBlock={saveEditBlock}
+                  cancelEditBlock={cancelEditBlock}
+                  startEditingBlock={startEditingBlock}
+                  removeGeneratedBlock={removeGeneratedBlock}
+                />
               ))}
             </div>
           </div>
 
-          {/* Voice Generation Controls */}
+          {/* Cài đặt Giọng đọc & Trình phát */}
           <div className={`bg-white border border-slate-200 rounded-3xl p-4 shadow-lg space-y-4 ${isInputFocused ? 'hidden md:block' : 'block'}`}>
             <div className="flex items-center justify-between">
               <button 
@@ -762,32 +1141,27 @@ export const PromptToVoice: React.FC<PromptToVoiceProps> = ({ outputLanguage, pr
                     <option value="th-TH">{translate('LANG_THAI', outputLanguage)}</option>
                   </select>
                 </div>
-                <div className="space-y-1">
-                  <label className="text-[10px] font-serif font-black text-slate-400 uppercase">{translate('GENDER_LABEL', outputLanguage)}</label>
+                <div className="col-span-2 space-y-1">
+                  <label className="text-[10px] font-serif font-black text-slate-400 uppercase">Nhân vật & Giới tính Giọng đọc chính</label>
                   <select 
-                    value={voiceGender}
-                    onChange={(e) => setVoiceGender(e.target.value as any)}
+                    value={`${voiceGender}:${voiceQuality}`}
+                    onChange={(e) => {
+                      const [gender, quality] = e.target.value.split(':');
+                      setVoiceGender(gender as any);
+                      setVoiceQuality(quality);
+                    }}
                     className="w-full bg-slate-50 border border-slate-100 rounded-lg px-2 py-1 text-[10px] font-bold outline-none"
                   >
-                    <option value="FEMALE">{translate('FEMALE_VOICE', outputLanguage)}</option>
-                    <option value="MALE">{translate('MALE_VOICE', outputLanguage)}</option>
-                  </select>
-                </div>
-                <div className="space-y-1">
-                  <label className="text-[10px] font-serif font-black text-slate-400 uppercase">{translate('QUALITY_LABEL', outputLanguage)}</label>
-                  <select 
-                    value={voiceQuality}
-                    onChange={(e) => setVoiceQuality(e.target.value)}
-                    className="w-full bg-slate-50 border border-slate-100 rounded-lg px-2 py-1 text-[10px] font-bold outline-none"
-                  >
-                    <option value="QUALITY_YOUTHFUL">{translate('QUALITY_YOUTHFUL', outputLanguage)}</option>
-                    <option value="QUALITY_MIDDLE_AGED">{translate('QUALITY_MIDDLE_AGED', outputLanguage)}</option>
-                    <option value="QUALITY_POWERFUL">{translate('QUALITY_POWERFUL', outputLanguage)}</option>
-                    <option value="QUALITY_GENTLE">{translate('QUALITY_GENTLE', outputLanguage)}</option>
-                    <option value="QUALITY_WARM">{translate('QUALITY_WARM', outputLanguage)}</option>
-                    <option value="QUALITY_CHARMING">{translate('QUALITY_CHARMING', outputLanguage)}</option>
-                    <option value="QUALITY_ENERGETIC">{translate('QUALITY_ENERGETIC', outputLanguage)}</option>
-                    <option value="QUALITY_DEEP_WARM">{translate('QUALITY_DEEP_WARM', outputLanguage)}</option>
+                    <optgroup label="GIỌNG NỮ (FEMALE PERSONAS)">
+                      <option value="FEMALE:QUALITY_YOUTHFUL">Nữ A: Trong trẻo, Điện ảnh (Gió nhẹ / Zephyr)</option>
+                      <option value="FEMALE:QUALITY_POWERFUL">Nữ B: Sang trọng, Cuốn hút (Aoede)</option>
+                      <option value="FEMALE:QUALITY_GENTLE">Nữ C: Dịu dàng, Tâm sự (Kore)</option>
+                    </optgroup>
+                    <optgroup label="GIỌNG NAM (MALE PERSONAS)">
+                      <option value="MALE:QUALITY_POWERFUL">Nam A: Trầm ấm, Uy quyền (Charon)</option>
+                      <option value="MALE:QUALITY_YOUTHFUL">Nam B: Trẻ trung, Năng nổ (Puck)</option>
+                      <option value="MALE:QUALITY_GENTLE">Nam C: Điềm đạm, Thuyết minh (Orus)</option>
+                    </optgroup>
                   </select>
                 </div>
                 <div className="space-y-1">
