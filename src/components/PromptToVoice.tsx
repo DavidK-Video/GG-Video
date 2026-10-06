@@ -11,6 +11,7 @@ interface PromptToVoiceProps {
   profile: UserProfile;
   useProjectKey: boolean;
   deductCredit: (amount: number, action?: any) => Promise<boolean>;
+  refundCredit?: (amount: number, action?: string) => Promise<void>;
   credit: number;
   userPlan: string;
   apiKeys: string[];
@@ -268,7 +269,16 @@ const TextBlockItem: React.FC<TextBlockItemProps> = React.memo(({
 // ================================================================
 // MAIN COMPONENT: PromptToVoice
 // ================================================================
-export const PromptToVoice: React.FC<PromptToVoiceProps> = ({ outputLanguage, profile, useProjectKey, deductCredit, credit, userPlan, apiKeys }) => {
+export const PromptToVoice: React.FC<PromptToVoiceProps> = ({ 
+  outputLanguage, 
+  profile, 
+  useProjectKey, 
+  deductCredit, 
+  refundCredit,
+  credit, 
+  userPlan, 
+  apiKeys 
+}) => {
   const [prompts, setPrompts] = useState<PromptBlock[]>([{ id: '1', text: '' }]);
   const [generatedTextBlocks, setGeneratedTextBlocks] = useState<TextBlock[]>([]);
   const [isInputFocused, setIsInputFocused] = useState(false);
@@ -647,13 +657,10 @@ export const PromptToVoice: React.FC<PromptToVoiceProps> = ({ outputLanguage, pr
     setStatusMessage(translate('STATUS_GENERATING_TEXT', outputLanguage));
     setGeneratedTextBlocks([]);
     
-    try {
-      const success = await deductCredit(1, 'TEXT');
-      if (!success) {
-        setIsGeneratingText(false);
-        return;
-      }
+    let totalDeducted = 0;
+    const newBlocks: TextBlock[] = [];
 
+    try {
       const isAdminFlag = profile.isAdmin;
       let finalApiKeys = apiKeys;
       let finalUseProjectKey = useProjectKey;
@@ -671,7 +678,6 @@ export const PromptToVoice: React.FC<PromptToVoiceProps> = ({ outputLanguage, pr
         finalApiKeys = apiKeys;
       }
 
-      const newBlocks: TextBlock[] = [];
       const targetMax = targetLang === 'VN' ? 31 : (targetLang === 'EN' ? 21 : 24);
       const targetLangName = targetLang === 'VN' ? 'Tiếng Việt' : 'English';
       
@@ -700,11 +706,12 @@ export const PromptToVoice: React.FC<PromptToVoiceProps> = ({ outputLanguage, pr
         6. Add background music/atmosphere instructions in parentheses ( ) at the START of the paragraph (e.g., (Mysterious ambient music begins)). Parentheses contents are not counted in the word limit.
         7. Return ONLY the script content, no introductions or explanations.`;
 
-      // Tạo kịch bản cho từng dòng nhập vào
+      // Tạo kịch bản cho từng dòng nhập vào: mỗi dòng trừ đúng 1 xu
       for (let i = 0; i < allLines.length; i++) {
         const line = allLines[i];
-        const successLine = await deductCredit(1);
+        const successLine = await deductCredit(1, 'TEXT');
         if (!successLine) break;
+        totalDeducted += 1;
 
         const text = await generateGeminiText(line, systemInstruction, finalApiKeys, targetLang, finalUseProjectKey);
         newBlocks.push({
@@ -718,16 +725,22 @@ export const PromptToVoice: React.FC<PromptToVoiceProps> = ({ outputLanguage, pr
       setGeneratedTextBlocks(newBlocks);
     } catch (error: any) {
       console.error("Text generation error:", error);
+      // Nếu bị lỗi và chưa tạo được kịch bản thành công, tự động hoàn lại xu đã trừ
+      if (totalDeducted > 0 && newBlocks.length === 0 && refundCredit) {
+        await refundCredit(totalDeducted, 'REFUND_TEXT_FAIL');
+      }
+
       const errorMsg = error.message || String(error);
+      const refundNotice = totalDeducted > 0 && newBlocks.length === 0 ? `\n\n(Đã tự động hoàn lại ${totalDeducted} xu vào tài khoản của bạn)` : '';
       if (errorMsg.includes('401') || errorMsg.includes('403') || errorMsg.includes('PERMISSION_DENIED') || errorMsg.includes('API key not valid') || error.isKeyError) {
-        alert(translate('API_AUTH_ERROR', outputLanguage));
+        alert(translate('API_AUTH_ERROR', outputLanguage) + refundNotice);
         if (window.aistudio?.openSelectKey) {
           await window.aistudio.openSelectKey();
         }
       } else if (errorMsg.includes('429') || errorMsg.includes('quota')) {
-        alert(translate('QUOTA_EXCEEDED', outputLanguage));
+        alert(translate('QUOTA_EXCEEDED', outputLanguage) + refundNotice);
       } else {
-        alert(`${translate('AI_ERROR', outputLanguage)}: ${errorMsg}`);
+        alert(`${translate('AI_ERROR', outputLanguage)}: ${errorMsg}${refundNotice}`);
       }
     } finally {
       setIsGeneratingText(false);
@@ -768,12 +781,15 @@ export const PromptToVoice: React.FC<PromptToVoiceProps> = ({ outputLanguage, pr
     setProgress(10);
     setShowErrorHint(false);
 
+    let voiceDeducted = false;
+
     try {
       const success = await deductCredit(1, 'VOICE');
       if (!success) {
         setIsGeneratingVoice(false);
         return;
       }
+      voiceDeducted = true;
 
       const isPro = (userPlan === 'pro' || userPlan === 'pro1' || profile.isAdmin);
       const isAdminFlagVoice = profile.isAdmin;
@@ -846,18 +862,24 @@ export const PromptToVoice: React.FC<PromptToVoiceProps> = ({ outputLanguage, pr
       setProgress(100);
     } catch (error: any) {
       console.error("Voice generation error:", error);
+      // Nếu đã trừ xu nhưng tạo giọng đọc thất bại, tự động hoàn lại xu cho người dùng
+      if (voiceDeducted && refundCredit) {
+        await refundCredit(1, 'REFUND_VOICE_FAIL');
+      }
+
       setShowErrorHint(true);
       const errorMsg = error.message || String(error);
+      const refundNotice = voiceDeducted ? '\n\n(Đã tự động hoàn lại 1 xu vào tài khoản của bạn)' : '';
       
       if (errorMsg.includes('401') || errorMsg.includes('403') || errorMsg.includes('PERMISSION_DENIED') || errorMsg.includes('API key not valid') || error.isKeyError) {
-        alert(translate('API_AUTH_ERROR', outputLanguage));
+        alert(translate('API_AUTH_ERROR', outputLanguage) + refundNotice);
         if (window.aistudio?.openSelectKey) {
           await window.aistudio.openSelectKey();
         }
       } else if (errorMsg.includes('429') || errorMsg.includes('quota')) {
-        alert(translate('QUOTA_EXCEEDED', outputLanguage));
+        alert(translate('QUOTA_EXCEEDED', outputLanguage) + refundNotice);
       } else {
-        alert(`${translate('AI_ERROR', outputLanguage)}: ${errorMsg}`);
+        alert(`${translate('AI_ERROR', outputLanguage)}: ${errorMsg}${refundNotice}`);
       }
     } finally {
       setIsGeneratingVoice(false);
