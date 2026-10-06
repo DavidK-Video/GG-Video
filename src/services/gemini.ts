@@ -1035,6 +1035,10 @@ const resolveRegionalVoice = async (
   } catch (err) {
     console.warn('[TTS] Không tra được Voice Library, dùng giọng prebuilt:', err);
   }
+  // Đảm bảo chuẩn xác: Miền Bắc giọng Nam ưu tiên chuẩn Nam A (Charon) phát thanh viên trầm ấm
+  if (!found && region === 'NORTH' && gender === 'MALE') {
+    found = 'Charon';
+  }
   regionalVoiceCache.set(cacheKey, found);
   return found;
 };
@@ -1134,68 +1138,99 @@ export const generateGeminiVoice = async (
     return isFreeKey === true ? base : [...base, TTS_25_PRO];
   };
 
-  // Tag matching for dynamic gender or emotion switching (detect all bracketed tags [...])
-  const TAG_REGEX = /(\[[^\]]+\])/g;
+  // Phân tích và nhận diện các thẻ chuyển giọng [Giọng Nam], [Giọng Nữ] và cảm xúc
   const isMaleTag = (tag: string) => /nam|male/i.test(tag);
   const isFemaleTag = (tag: string) => /nữ|nu|female/i.test(tag);
 
-  const rawSegments = text.split(TAG_REGEX);
-  const segments: { text: string; gender: 'MALE' | 'FEMALE'; styleOverride?: string }[] = [];
-  
-  // Find the first tag in the whole text to serve as the default for text appearing BEFORE any tag.
-  let firstTagInBox: 'MALE' | 'FEMALE' | null = null;
-  for (const part of rawSegments) {
-    if (isMaleTag(part)) {
-      firstTagInBox = 'MALE';
-      break;
-    } else if (isFemaleTag(part)) {
-      firstTagInBox = 'FEMALE';
-      break;
+  const detectEmotionStyle = (tag: string): string | undefined => {
+    if (/hào hứng|hao hung|năng động|nang dong|vui vẻ|vui ve|quảng cáo|marketing|excited|enthusiastic|energetic/i.test(tag)) {
+      return 'Enthusiastic, cheerful, high energy bright marketing voice, fast pace';
+    }
+    if (/sâu lắng|sau lang|nhẹ nhàng|nhe nhang|tâm sự|tam su|trầm lắng|tram lang|buồn|sad|gentle|nostalgic/i.test(tag)) {
+      return 'Warm, gentle, soft storytelling tone, nostalgic, slow tempo';
+    }
+    if (/kịch tính|kich tinh|hồi hộp|hoi hop|bí ẩn|bi an|kinh dị|kinh di|rùng rợn|suspense|dramatic|mysterious/i.test(tag)) {
+      return 'Suspenseful, dramatic, low pitch, slow tempo with tense dramatic pauses, mysterious narrative tone';
+    }
+    if (/trang trọng|trang trong|tin tức|tin tuc|thời sự|thoi su|formal|news|anchor/i.test(tag)) {
+      return 'Professional, formal, objective news anchor tone, medium pace, crisp studio pronunciation';
+    }
+    if (/uy quyền|uy quyen|mạnh mẽ|manh me|quyền lực|quyen luc|authoritative|powerful|confident/i.test(tag)) {
+      return 'Deep, majestic, authoritative Vietnamese studio voice, powerful and confident tone, steady cadence';
+    }
+    return undefined;
+  };
+
+  // Tìm tất cả các thẻ đổi giọng giới tính [Giọng Nam], [Giọng Nữ]
+  const tagRegex = /\[([^\]]+)\]/g;
+  const genderMatches: { tag: string; gender: 'MALE' | 'FEMALE'; start: number; end: number }[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = tagRegex.exec(text)) !== null) {
+    const rawTag = m[0];
+    if (isMaleTag(rawTag)) {
+      genderMatches.push({ tag: rawTag, gender: 'MALE', start: m.index, end: m.index + rawTag.length });
+    } else if (isFemaleTag(rawTag)) {
+      genderMatches.push({ tag: rawTag, gender: 'FEMALE', start: m.index, end: m.index + rawTag.length });
     }
   }
 
-  let currentActiveGender: 'MALE' | 'FEMALE' = firstTagInBox || voiceGender;
-  let currentActiveStyle: string | undefined = undefined;
+  const segments: { text: string; gender: 'MALE' | 'FEMALE'; styleOverride?: string }[] = [];
 
-  for (let i = 0; i < rawSegments.length; i++) {
-    const part = rawSegments[i];
-    if (TAG_REGEX.test(part)) {
-      if (isMaleTag(part)) {
-        currentActiveGender = 'MALE';
-      } else if (isFemaleTag(part)) {
-        currentActiveGender = 'FEMALE';
-      } else {
-        // Parse dynamic emotional tags inside brackets
-        if (/hào hứng|hao hung|năng động|nang dong|vui vẻ|vui ve|quảng cáo|marketing|excited|enthusiastic|energetic/i.test(part)) {
-          currentActiveStyle = 'Enthusiastic, cheerful, high energy bright marketing voice, fast pace';
-        } else if (/sâu lắng|sau lang|nhẹ nhàng|nhe nhang|tâm sự|tam su|trầm lắng|tram lang|buồn|sad|gentle|nostalgic/i.test(part)) {
-          currentActiveStyle = 'Warm, gentle, soft and highly emotional storytelling tone, nostalgic, slow tempo';
-        } else if (/kịch tính|kich tinh|hồi hộp|hoi hop|bí ẩn|bi an|kinh dị|kinh di|rùng rợn|suspense|dramatic|mysterious/i.test(part)) {
-          currentActiveStyle = 'Suspenseful, dramatic, low pitch, slow tempo with tense dramatic pauses, mysterious narrative tone';
-        } else if (/trang trọng|trang trong|tin tức|tin tuc|thời sự|thoi su|formal|news|anchor/i.test(part)) {
-          currentActiveStyle = 'Professional, formal, objective news anchor tone, medium pace, steady breathing';
-        } else if (/uy quyền|uy quyen|mạnh mẽ|manh me|quyền lực|quyen luc|authoritative|powerful|confident/i.test(part)) {
-          currentActiveStyle = 'Deep, majestic, authoritative Vietnamese studio voice, powerful and confident tone, steady cadence';
+  if (genderMatches.length === 0) {
+    // Không có thẻ giới tính -> áp dụng giọng đọc chính đã chọn
+    const styleOverride = text.match(/\[[^\]]+\]/g)?.map(detectEmotionStyle).find(Boolean);
+    const cleaned = text.replace(/\[[^\]]+\]/g, '').replace(/^\s*TEXT:\s*/i, '').replace(/^[\s\-–—:]+/, '').trim();
+    if (cleaned) {
+      const finalStyle = styleOverride || detectSemanticStyle(cleaned, voiceGender);
+      segments.push({ text: cleaned, gender: voiceGender, styleOverride: finalStyle || undefined });
+    }
+  } else {
+    // Phân tích linh hoạt CẢ 2 CÁCH ĐẶT THẺ:
+    // 1. Thẻ đặt ở CUỐI câu/dòng (Suffix): "Chatbot AI... [giọng nam]. Ngành thời trang... [giọng nữ]."
+    // 2. Thẻ đặt ở ĐẦU câu/dòng (Prefix): "[giọng nam] Chatbot AI... [giọng nữ] Ngành thời trang..."
+    const firstTag = genderMatches[0];
+    const textBeforeFirstTag = text.substring(0, firstTag.start).replace(/\[[^\]]+\]/g, '').trim();
+    const isSuffixFormat = textBeforeFirstTag.length > 0;
+
+    if (isSuffixFormat) {
+      // Định dạng thẻ ở CUỐI câu: mỗi đoạn lời thoại nằm trước thẻ tương ứng
+      let lastBoundary = 0;
+      for (let i = 0; i < genderMatches.length; i++) {
+        const gTag = genderMatches[i];
+        const rawChunk = text.substring(lastBoundary, gTag.start);
+        const styleOverride = (rawChunk.match(/\[[^\]]+\]/g) || []).map(detectEmotionStyle).find(Boolean);
+
+        let nextPos = gTag.end;
+        while (nextPos < text.length && /[.?!,;\s\n\r]/.test(text[nextPos])) {
+          nextPos++;
+        }
+        lastBoundary = nextPos;
+
+        const cleaned = rawChunk.replace(/\[[^\]]+\]/g, '').replace(/^\s*TEXT:\s*/i, '').replace(/^[\s\-–—:]+/, '').trim();
+        if (cleaned) {
+          const finalStyle = styleOverride || detectSemanticStyle(cleaned, gTag.gender);
+          segments.push({ text: cleaned, gender: gTag.gender, styleOverride: finalStyle || undefined });
         }
       }
-      continue;
-    }
-    
-    // Clean text: strip any nested brackets, tags or prompt artifacts so AI never reads them aloud
-    const cleaned = part
-      .replace(/\[[^\]]+\]/g, '')
-      .replace(/^\s*TEXT:\s*/i, '')
-      .replace(/^[\s\-–—:]+/, '')
-      .trim();
-
-    if (cleaned) {
-      // Use explicit emotional style tag, or fall back to automatic semantic analysis of the paragraph
-      const finalStyle = currentActiveStyle || detectSemanticStyle(cleaned, currentActiveGender);
-      segments.push({ 
-        text: cleaned, 
-        gender: currentActiveGender,
-        styleOverride: finalStyle || undefined
-      });
+      const remaining = text.substring(lastBoundary).replace(/\[[^\]]+\]/g, '').replace(/^\s*TEXT:\s*/i, '').replace(/^[\s\-–—:]+/, '').trim();
+      if (remaining) {
+        const finalStyle = detectSemanticStyle(remaining, voiceGender);
+        segments.push({ text: remaining, gender: voiceGender, styleOverride: finalStyle || undefined });
+      }
+    } else {
+      // Định dạng thẻ ở ĐẦU câu: mỗi đoạn lời thoại nằm ngay sau thẻ
+      for (let i = 0; i < genderMatches.length; i++) {
+        const gTag = genderMatches[i];
+        const nextTag = genderMatches[i + 1];
+        const endPos = nextTag ? nextTag.start : text.length;
+        const rawChunk = text.substring(gTag.end, endPos);
+        const styleOverride = (rawChunk.match(/\[[^\]]+\]/g) || []).map(detectEmotionStyle).find(Boolean);
+        const cleaned = rawChunk.replace(/\[[^\]]+\]/g, '').replace(/^\s*TEXT:\s*/i, '').replace(/^[\s\-–—:]+/, '').trim();
+        if (cleaned) {
+          const finalStyle = styleOverride || detectSemanticStyle(cleaned, gTag.gender);
+          segments.push({ text: cleaned, gender: gTag.gender, styleOverride: finalStyle || undefined });
+        }
+      }
     }
   }
 
@@ -1297,8 +1332,8 @@ export const generateGeminiVoice = async (
       const isMale = chunk.gender === 'MALE';
 
       // Style prompt for speechMetadata / Gemini 3.8: explicit tone, cadence and native pronunciation
-      const masculineStyle = `Deep, resonant, masculine ${langName} male studio narrator, warm baritone timbre, authoritative, steady cadence, natural breathing, clear native pronunciation`;
-      const feminineStyle = `Warm, clear, elegant feminine ${langName} female studio narrator, melodious and expressive, natural cadence, clear native pronunciation`;
+      const masculineStyle = `Deep, resonant, masculine ${langName} male studio narrator, warm baritone timbre, authoritative, steady cadence, crisp clear studio voice, native pronunciation without gasping or trailing breath`;
+      const feminineStyle = `Warm, clear, elegant feminine ${langName} female studio narrator, melodious and expressive, steady cadence, crisp clear studio voice, native pronunciation without gasping or trailing breath`;
       const activeStyle = isMale ? masculineStyle : feminineStyle;
       
       const selectedStyle = chunk.styleOverride || `${activeStyle}${styleText ? `, ${styleText}` : ''}${qualityText ? `, ${qualityText}` : ''}`;
