@@ -18,6 +18,8 @@ import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
 import { googleSheetService } from '../services/googleSheetService';
 import { isTruthy } from '../services/utils';
+import { Mic } from 'lucide-react';
+import { playSilenceWarning, formatVoiceTranscript } from '../utils/voiceFeedback';
 
 interface VideoGeneratorProps {
   onGenerated: (item: GenerationHistory) => void;
@@ -302,6 +304,108 @@ export const VideoGenerator: React.FC<VideoGeneratorProps> = ({
   const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
   const [editPromptValue, setEditPromptValue] = useState("");
   const [linkTopic, setLinkTopic] = useState("");
+  const [isRecordingLinkTopic, setIsRecordingLinkTopic] = useState(false);
+  const linkTopicRecognitionRef = useRef<any>(null);
+  const linkTopicSilenceTimeoutRef = useRef<any>(null);
+
+  const stopLinkTopicRecording = (speakWarning: boolean = false) => {
+    if (linkTopicSilenceTimeoutRef.current) {
+      clearTimeout(linkTopicSilenceTimeoutRef.current);
+      linkTopicSilenceTimeoutRef.current = null;
+    }
+    if (linkTopicRecognitionRef.current) {
+      try {
+        linkTopicRecognitionRef.current.stop();
+      } catch (e) {
+        console.warn(e);
+      }
+      linkTopicRecognitionRef.current = null;
+    }
+    setIsRecordingLinkTopic(false);
+    if (speakWarning) {
+      playSilenceWarning(outputLanguage);
+    }
+  };
+
+  const toggleLinkTopicSpeechToText = () => {
+    if (isRecordingLinkTopic) {
+      stopLinkTopicRecording(false);
+      return;
+    }
+
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      alert(outputLanguage === 'VN' 
+        ? "Trình duyệt của bạn không hỗ trợ nhận diện giọng nói. Hãy dùng Chrome hoặc Safari." 
+        : "Your browser does not support Speech Recognition. Please use Chrome or Safari.");
+      return;
+    }
+
+    try {
+      const recognition = new SpeechRecognition();
+      recognition.lang = outputLanguage === 'VN' ? 'vi-VN' : 'en-US';
+      recognition.continuous = true;
+      recognition.interimResults = false;
+
+      recognition.onstart = () => {
+        setIsRecordingLinkTopic(true);
+        if (linkTopicSilenceTimeoutRef.current) clearTimeout(linkTopicSilenceTimeoutRef.current);
+        linkTopicSilenceTimeoutRef.current = setTimeout(() => {
+          stopLinkTopicRecording(true);
+        }, 7000);
+      };
+
+      recognition.onresult = (event: any) => {
+        if (linkTopicSilenceTimeoutRef.current) clearTimeout(linkTopicSilenceTimeoutRef.current);
+        linkTopicSilenceTimeoutRef.current = setTimeout(() => {
+          stopLinkTopicRecording(true);
+        }, 7000);
+
+        const lastResultIndex = event.results.length - 1;
+        const transcript = event.results[lastResultIndex][0].transcript || '';
+        if (transcript.trim()) {
+          const formatted = formatVoiceTranscript(transcript);
+          setLinkTopic(prev => {
+            const current = (prev || '').trim();
+            const sep = current ? ' ' : '';
+            return current + sep + formatted;
+          });
+        }
+      };
+
+      recognition.onerror = (event: any) => {
+        console.error("Speech recognition error:", event.error);
+        if (event.error === 'no-speech') {
+          stopLinkTopicRecording(true);
+        } else {
+          stopLinkTopicRecording(false);
+        }
+      };
+
+      recognition.onend = () => {
+        setIsRecordingLinkTopic(false);
+        if (linkTopicSilenceTimeoutRef.current) {
+          clearTimeout(linkTopicSilenceTimeoutRef.current);
+          linkTopicSilenceTimeoutRef.current = null;
+        }
+      };
+
+      linkTopicRecognitionRef.current = recognition;
+      recognition.start();
+    } catch (err) {
+      console.error("Failed to start Speech Recognition:", err);
+      setIsRecordingLinkTopic(false);
+    }
+  };
+
+  useEffect(() => {
+    return () => {
+      if (linkTopicSilenceTimeoutRef.current) clearTimeout(linkTopicSilenceTimeoutRef.current);
+      if (linkTopicRecognitionRef.current) {
+        try { linkTopicRecognitionRef.current.stop(); } catch (err) { console.warn(err); }
+      }
+    };
+  }, []);
   const [storyCount, setStoryCount] = useState<number>(1);
   const [maleCount, setMaleCount] = useState<number>(1);
   const [femaleCount, setFemaleCount] = useState<number>(1);
@@ -1925,12 +2029,12 @@ export const VideoGenerator: React.FC<VideoGeneratorProps> = ({
                        <input type="file" ref={refImageInputRef} onChange={handleRefImageChange} hidden accept="image/*" />
                     </div>
                   </div>
-                  <div className="bg-white border-2 border-slate-100 rounded-2xl p-3 shadow-inner max-h-[400px] overflow-y-auto">
-                    <div className="grid grid-cols-3 gap-3">
+                  <div className="h-40 bg-white border-2 border-slate-100 rounded-2xl p-3 shadow-inner">
+                    <div className="h-full overflow-x-auto flex gap-3 pb-1">
                       {batchResults.map((res, idx) => (
-                        <div key={idx} className="relative group cursor-pointer" onClick={() => { if(res.url) window.open(res.url, '_blank'); }}>
+                        <div key={idx} className="flex-shrink-0 w-32 relative group">
                           {res.url ? (
-                            <img src={res.url} className="w-full aspect-square object-contain bg-slate-50 rounded-xl border-2 border-slate-100" />
+                            <img src={res.url} className="w-full h-full object-cover rounded-xl border-2 border-slate-100" />
                           ) : (
                             <div className="w-full h-full bg-slate-100 rounded-xl border-2 border-dashed border-slate-200 flex flex-col items-center justify-center p-2 text-center overflow-hidden">
                               <span className={`text-[9px] ${res.error ? 'text-red-500' : 'text-slate-400'} font-black uppercase leading-tight cursor-help`} title={res.error}>
@@ -1971,10 +2075,31 @@ export const VideoGenerator: React.FC<VideoGeneratorProps> = ({
                                 <input type="number" min="1" max="50" value={storyCount} onChange={e => setStoryCount(parseInt(e.target.value) || 1)} className="text-[8px] font-black w-8 text-center outline-none bg-transparent text-indigo-700" />
                               </div>
                             </div>
-                            <textarea 
-                              onFocus={() => setIsInputFocused(true)}
-                              onBlur={() => setIsInputFocused(false)}
-                              value={linkTopic} onChange={e => setLinkTopic(e.target.value)} className="bg-white border-2 border-slate-200 rounded-xl px-4 py-3 text-[12px] font-bold focus:border-indigo-400 outline-none h-32 resize-none" placeholder={translate('STORY_DESC_PLACEHOLDER', outputLanguage)} />
+                            <div className="relative group">
+                              <textarea 
+                                onFocus={() => setIsInputFocused(true)}
+                                onBlur={() => setIsInputFocused(false)}
+                                value={linkTopic} onChange={e => setLinkTopic(e.target.value)} className="w-full bg-white border-2 border-slate-200 rounded-xl px-4 py-3 pr-12 text-[12px] font-bold focus:border-indigo-400 outline-none h-32 resize-none" placeholder={translate('STORY_DESC_PLACEHOLDER', outputLanguage)} />
+                              <button
+                                type="button"
+                                onClick={toggleLinkTopicSpeechToText}
+                                className={`absolute top-3 right-3 p-2 rounded-xl border transition shadow-sm active:scale-95 flex items-center justify-center ${
+                                  isRecordingLinkTopic
+                                    ? 'bg-red-50 border-red-200 text-red-600 animate-pulse'
+                                    : 'bg-slate-50 border-slate-200 text-slate-500 hover:bg-indigo-50 hover:text-indigo-600'
+                                }`}
+                                title={outputLanguage === 'VN' ? 'Nhận diện giọng nói (Micro)' : 'Voice Dictation (Microphone)'}
+                              >
+                                {isRecordingLinkTopic ? (
+                                  <div className="relative flex items-center justify-center">
+                                    <span className="animate-ping absolute inline-flex h-3 w-3 rounded-full bg-red-400 opacity-75"></span>
+                                    <Mic size={14} className="relative text-red-600" />
+                                  </div>
+                                ) : (
+                                  <Mic size={14} />
+                                )}
+                              </button>
+                            </div>
                           </div>
                           <div className="flex flex-col gap-1">
                             <label className="text-[8px] font-serif font-black text-indigo-700 uppercase ml-2 italic">{translate('CHARACTERS_LABEL', outputLanguage)}</label>
