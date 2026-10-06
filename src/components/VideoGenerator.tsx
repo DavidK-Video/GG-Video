@@ -53,6 +53,7 @@ interface VideoGeneratorProps {
   hasApiKey: boolean;
   onOpenKeyPicker: () => void;
   deductCredit: (amount: number, action?: any) => Promise<boolean>;
+  refundCredit?: (amount: number, action?: string) => Promise<void>;
   useProjectKey: boolean;
 }
 
@@ -111,7 +112,7 @@ export const VideoGenerator: React.FC<VideoGeneratorProps> = ({
   batchResults, setBatchResults,
   outputLanguage, setOutputLanguage, userPlan, credit,
   email,
-  apiKeys, adminFreeKeys = [], adminPaidKeys = [], hasApiKey, onOpenKeyPicker, useProjectKey, deductCredit
+  apiKeys, adminFreeKeys = [], adminPaidKeys = [], hasApiKey, onOpenKeyPicker, useProjectKey, deductCredit, refundCredit
 }) => {
   /**
    * Production-ready validation and credit/limit check.
@@ -796,6 +797,9 @@ export const VideoGenerator: React.FC<VideoGeneratorProps> = ({
       setActiveTasks(cur => cur.map(t => t.id === taskId ? completed : t));
       return result.videoRef; 
     } catch (err: any) {
+      if (refundCredit) {
+        await refundCredit(3, 'REFUND_VIDEO_FAIL');
+      }
       // 🍪 Cookie hết hạn hoặc sai
       if ((err as any).isCookieError) {
         setActiveTasks(cur => cur.map(t =>
@@ -1543,6 +1547,9 @@ export const VideoGenerator: React.FC<VideoGeneratorProps> = ({
             return imageUrl;
           } catch (itemErr: any) {
             console.error(`Batch Image Gen Error for item ${i + 1}:`, itemErr);
+            if (refundCredit && costPerImage > 0) {
+              await refundCredit(costPerImage, 'REFUND_IMAGE_FAIL');
+            }
             setBatchResults((prev: BatchResult[]) => {
               const next = [...prev];
               next[i] = { 
@@ -1630,6 +1637,9 @@ export const VideoGenerator: React.FC<VideoGeneratorProps> = ({
       
       await finalizeGeneration();
     } catch (err: any) { 
+      if (refundCredit) {
+        await refundCredit(2, 'REFUND_IMAGE_FAIL');
+      }
       console.error("Regen Image Error:", err);
       alert(`${translate('REGEN_IMAGE_ERROR', outputLanguage)}: ${err.message || err}`); 
       const isQuota = err.message?.includes("429") || err.message?.includes("RESOURCE_EXHAUSTED") || err.message?.includes("quota");
@@ -1715,6 +1725,9 @@ export const VideoGenerator: React.FC<VideoGeneratorProps> = ({
           return imageUrl;
         } catch (itemErr: any) {
           console.error(`Regen Batch Item Error for index ${idx}:`, itemErr);
+          if (refundCredit) {
+            await refundCredit(2, 'REFUND_IMAGE_FAIL');
+          }
           setBatchResults((prev: BatchResult[]) => {
             const next = [...prev];
             next[idx] = { ...next[idx], url: "", selected: false, error: itemErr.message || "Regeneration failed" };
@@ -1811,6 +1824,9 @@ export const VideoGenerator: React.FC<VideoGeneratorProps> = ({
         setScenePrompts(extractScenePrompts(text, true, false));
       }
     } catch (err: any) { 
+      if (refundCredit) {
+        await refundCredit(1, 'REFUND_TOOL_FAIL');
+      }
       console.error("Tool Generation Error:", err);
       alert(`${translate('AI_ERROR', outputLanguage)}: ${err.message || err}`); 
       const isQuota = err.message?.includes("429") || err.message?.includes("RESOURCE_EXHAUSTED") || err.message?.includes("quota");
